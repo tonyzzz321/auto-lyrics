@@ -379,7 +379,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Android Auto"
+            android:text="Lyrics"
             android:textColor="#8888AA"
             android:textSize="12sp"
             android:fontFamily="sans-serif-medium"
@@ -409,7 +409,7 @@
                 android:textSize="12sp"
                 android:gravity="center"
                 android:background="?attr/selectableItemBackgroundBorderless"
-                android:contentDescription="Uses word-level timing for Android Auto karaoke display when word timing is available." />
+                android:contentDescription="Word-by-word highlighting on the phone, fullscreen, and Android Auto lyrics when word timing is available." />
 
             <View
                 android:layout_width="0dp"
@@ -419,7 +419,8 @@
             <androidx.appcompat.widget.SwitchCompat
                 android:id="@+id/switch_aa_karaoke"
                 android:layout_width="wrap_content"
-                android:layout_height="wrap_content" />
+                android:layout_height="wrap_content"
+                android:minHeight="0dp" />
         </LinearLayout>
 
         <!-- Translation toggle -->
@@ -457,26 +458,121 @@
             <androidx.appcompat.widget.SwitchCompat
                 android:id="@+id/switch_translation"
                 android:layout_width="wrap_content"
-                android:layout_height="wrap_content" />
+                android:layout_height="wrap_content"
+                android:minHeight="0dp" />
         </LinearLayout>
 
-        <!-- AA Sync section title -->
+        <!-- Sync section divider -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#2A2A3A"
+            android:layout_marginTop="12dp"
+            android:layout_marginBottom="8dp" />
+
+        <!-- Sync section title -->
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="AA Sync"
+            android:text="Sync"
             android:textColor="#8888AA"
             android:textSize="12sp"
             android:fontFamily="sans-serif-medium"
-            android:layout_marginTop="12dp"
             android:layout_marginBottom="8dp" />
+
+        <!-- Phone Sync offset row -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Phone Sync"
+                android:textColor="#CCCCDD"
+                android:textSize="13sp" />
+
+            <com.autolyrics.ui.SettingInfoView
+                android:id="@+id/info_phone_offset"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:layout_marginStart="4dp"
+                android:text="ⓘ"
+                android:textColor="#777792"
+                android:textSize="12sp"
+                android:gravity="center"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Shifts lyric timing on the phone display. Fine-tune presets and Tap to Sync stay below the lyrics." />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <Button
+                android:id="@+id/btn_delay_minus"
+                android:layout_width="48dp"
+                android:layout_height="34dp"
+                android:text="−50"
+                android:textSize="11sp"
+                android:textColor="#CCCCDD"
+                android:backgroundTint="#2A2A3E"
+                android:contentDescription="Move phone lyrics 50 milliseconds earlier"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:textAllCaps="false"
+                android:minWidth="0dp"
+                android:padding="0dp"
+                style="?attr/materialButtonOutlinedStyle" />
+
+            <TextView
+                android:id="@+id/tv_delay"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="4dp"
+                android:layout_marginEnd="4dp"
+                android:text="0ms"
+                android:textColor="#CCCCDD"
+                android:textSize="13sp"
+                android:fontFamily="sans-serif-medium"
+                android:minWidth="52dp"
+                android:maxLines="1"
+                android:gravity="center" />
+
+            <Button
+                android:id="@+id/btn_delay_plus"
+                android:layout_width="48dp"
+                android:layout_height="34dp"
+                android:text="+50"
+                android:textSize="11sp"
+                android:textColor="#CCCCDD"
+                android:backgroundTint="#2A2A3E"
+                android:contentDescription="Move phone lyrics 50 milliseconds later"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:textAllCaps="false"
+                android:minWidth="0dp"
+                android:padding="0dp"
+                style="?attr/materialButtonOutlinedStyle" />
+        </LinearLayout>
 
         <!-- AA Sync offset row -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
-            android:gravity="center_vertical">
+            android:gravity="center_vertical"
+            android:layout_marginTop="6dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="AA Sync"
+                android:textColor="#CCCCDD"
+                android:textSize="13sp" />
 
             <com.autolyrics.ui.SettingInfoView
                 android:id="@+id/info_aa_offset"
@@ -632,60 +728,6 @@
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center">
-
-            <Button
-                android:id="@+id/btn_delay_minus"
-                android:layout_width="wrap_content"
-                android:layout_height="36dp"
-                android:text="−50ms"
-                android:textSize="11sp"
-                android:textColor="#CCCCDD"
-                android:backgroundTint="#2A2A3E"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:textAllCaps="false"
-                android:minWidth="0dp"
-                android:paddingStart="12dp"
-                android:paddingEnd="12dp"
-                style="?attr/materialButtonOutlinedStyle" />
-
-            <TextView
-                android:id="@+id/tv_delay"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="12dp"
-                android:layout_marginEnd="12dp"
-                android:text="Phone Sync: 0ms"
-                android:textColor="#8888AA"
-                android:textSize="13sp"
-                android:fontFamily="sans-serif-medium"
-                android:minWidth="120dp"
-                android:gravity="center" />
-
-            <Button
-                android:id="@+id/btn_delay_plus"
-                android:layout_width="wrap_content"
-                android:layout_height="36dp"
-                android:text="+50ms"
-                android:textSize="11sp"
-                android:textColor="#CCCCDD"
-                android:backgroundTint="#2A2A3E"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:textAllCaps="false"
-                android:minWidth="0dp"
-                android:paddingStart="12dp"
-                android:paddingEnd="12dp"
-                style="?attr/materialButtonOutlinedStyle" />
-        </LinearLayout>
-
-        <!-- Quick offset row with Reset centered between delay and advance presets -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center"
-            android:paddingTop="6dp">
 
             <Button
                 android:id="@+id/btn_quick_minus_1s"

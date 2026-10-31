@@ -59,10 +59,12 @@ class AutoLyricsApp : Application() {
         })
 
         // Keep lyric resolution active for the whole Android Auto projection
-        // session, even while the user is viewing another AA app.
+        // session, even while the user is viewing another AA app. NATIVE is
+        // the same relationship without a phone: the app running directly on
+        // an Automotive (AAOS) head unit, as in the AAOS test emulator.
         CarConnection(this).type.observeForever { connectionType ->
             LyricsDemandController.setCarProjectionConnected(
-                connectionType == CarConnection.CONNECTION_TYPE_PROJECTION
+                connectionType != CarConnection.CONNECTION_TYPE_NOT_CONNECTED
             )
         }
 

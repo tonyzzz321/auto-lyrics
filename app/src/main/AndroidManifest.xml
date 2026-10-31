@@ -42,6 +42,22 @@
             </intent-filter>
         </service>
 
+        <!-- AAOS media-template opt-in entry (browse host lists sources only for template apps) -->
+        <activity
+            android:name=".auto.CarTemplateActivity"
+            android:exported="true"
+            android:launchMode="singleInstance"
+            android:excludeFromRecents="true"
+            android:theme="@style/Theme.AutoLyrics">
+            <intent-filter>
+                <action android:name="androidx.car.app.mediaextensions.action.MEDIA_TEMPLATE_V2" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <meta-data
+                android:name="distractionOptimized"
+                android:value="true" />
+        </activity>
+
         <!-- Android Auto Media Browser Service -->
         <service
             android:name=".auto.LyricsBrowserService"
@@ -50,6 +66,9 @@
             <intent-filter>
                 <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
+            <meta-data
+                android:name="androidx.car.app.launchable"
+                android:value="true" />
         </service>
 
         <!-- Start service on boot / app update so AA discovers it -->

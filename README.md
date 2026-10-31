@@ -4,7 +4,7 @@ Auto Lyrics is an Android app that follows the active media session and displays
 
 ## Features
 
-- **Android Auto lyrics** — current line is marked with `▶` and surrounded by nearby lines.
+- **Android Auto lyrics** — current line marked with `▶` and pinned to the first row, plus a Karaoke tab with a two-line KTV-style board (left/right justified, each side advancing when its line finishes).
 - **Lyrics / Sync / More browse tabs** — lyrics are the primary view, timing adjustment is kept separate, and detailed track/provider information lives under More.
 - **Adaptive lyric window** — the main Lyrics tab shows 5 rows without translations and 3 rows when translated subtitles are present.
 - **Fixed 3-row Sync preview** — current line plus surrounding context while adjusting the Android Auto offset.
@@ -20,9 +20,9 @@ Auto Lyrics is an Android app that follows the active media session and displays
 - **Works with normal media-session players** — Spotify, YouTube Music, Apple Music, Poweramp, and other apps that expose usable Android media metadata.
 - **Demand-aware provider work** — active media sessions are monitored continuously, but lyric providers are queried only while the phone UI is in use or Android Auto projection is connected.
 - **Phone companion UI** — lyrics remain available on the phone, including the performance/karaoke view with translated sublines.
-- **Local cache** — normal and Karaoke selections use separate cache variants; word timestamps and explicit word end times are preserved.
+- **Local cache** — normal and Karaoke selections use separate cache variants; word timestamps and explicit word end times are preserved. Entries are permanent; applying a Manual Search result is the only refresh path.
 - **Dual translation engines** — on-device ML Kit, or any OpenAI-compatible remote LLM endpoint (model dropdown fed by the endpoint's `/models` route; API key optional).
-- **Persistent translation cache** — translated lines are stored per track, target language, engine/model, and lyric-text hash, so replays skip detection and network entirely.
+- **Persistent translation cache** — translated lines are stored per track, target language, and lyric-text hash, so replays skip detection and network entirely; applying a Manual Search result forces retranslation.
 - **Manual lyrics search** — main-screen button opens a dialog with editable song/artist terms; pick any result (Karaoke / Synced / Plain, with its duration vs the playing track) to override automatic resolution.
 
 ## Architecture
@@ -169,7 +169,7 @@ Shows detailed information such as title, artist, album, provider, synchronizati
 5. Provider-specific lookup logic gathers plausible candidates. Musixmatch locally validates the matcher result from its mobile macro response. SyncLRC is accepted only when the response contains a genuine Enhanced-LRC `karaoke` payload.
 6. `LyricsProviderResolver` validates metadata and compares candidate quality/source confidence.
 7. In normal mode, the highest-quality synchronized recording match wins. In Karaoke mode, a real WORD_SYNC candidate can replace that winner only when metadata and payload quality remain near-equivalent.
-8. The selected result is cached in a mode-specific cache variant. Karaoke falls back to a shorter refresh interval when no usable word timing was found, so a transient provider miss does not pin LINE_SYNC for a week.
+8. The selected result is written to a mode-specific cache variant and kept permanently; the provider race never re-runs for that track. Applying a Manual Search result is the only way to replace a cached entry (it also forces retranslation).
 
 This design is intentionally not “first provider to respond wins”; normal request latency is not part of the score. A provider only loses due to speed when it exceeds its timeout budget and therefore fails to produce a candidate for that comparison.
 

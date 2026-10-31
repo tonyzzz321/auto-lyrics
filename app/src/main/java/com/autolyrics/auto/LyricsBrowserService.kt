@@ -20,6 +20,7 @@ import com.autolyrics.model.LyricLine
 import com.autolyrics.model.LyricsState
 import com.autolyrics.model.LyricsStatus
 import com.autolyrics.model.TrackInfo
+import com.autolyrics.util.AaKaraokeRows
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collectLatest
 
@@ -72,6 +73,7 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
     companion object {
         private const val ROOT_ID = "root"
         private const val LYRICS_MENU_ID = "lyrics_menu"
+        private const val KARAOKE_MENU_ID = "karaoke_menu"
         private const val SYNC_MENU_ID = "sync_menu"
         private const val MORE_MENU_ID = "more_menu"
         private const val SYNC_MINUS_ID = "sync_minus"
@@ -93,7 +95,8 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         private const val NOTIFY_LYRICS = 1
         private const val NOTIFY_SYNC = 2
         private const val NOTIFY_MORE = 4
-        private const val NOTIFY_ALL = NOTIFY_LYRICS or NOTIFY_SYNC or NOTIFY_MORE
+        private const val NOTIFY_KARAOKE = 8
+        private const val NOTIFY_ALL = NOTIFY_LYRICS or NOTIFY_SYNC or NOTIFY_MORE or NOTIFY_KARAOKE
 
         // Now-playing card width budgets, in display units (1 per Latin char, 2 per
         // fullwidth/CJK char incl. ??). These are estimates: calibrate on the head unit.
@@ -186,10 +189,12 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
                 // the default browse tab. Sync is a secondary utility and More is
                 // reserved for detailed track/provider information.
                 items.add(buildBrowsableItem(LYRICS_MENU_ID, "Lyrics", "Current lyrics"))
+                items.add(buildBrowsableItem(KARAOKE_MENU_ID, "Karaoke", "Two-line lyric board"))
                 items.add(buildBrowsableItem(SYNC_MENU_ID, "Sync", "Adjust offset"))
                 items.add(buildBrowsableItem(MORE_MENU_ID, "More", "Track and lyrics details"))
             }
             LYRICS_MENU_ID -> buildLyricsMenu(state, items)
+            KARAOKE_MENU_ID -> buildKaraokeMenu(state, items)
             SYNC_MENU_ID -> buildSyncMenu(state, items)
             MORE_MENU_ID -> buildMoreMenu(state, items)
             SYNC_MINUS_ID, SYNC_PLUS_ID -> Unit
@@ -250,6 +255,53 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
                 }
             }
         }
+    }
+
+    /**
+     * Chinese-Karaoke style board: the active line pair stays on screen, the
+     * top row left-justified and the bottom row right-justified. Each side is
+     * replaced by the next line on its own track (current + 2) when its line
+     * finishes, so the two rows always carry the next two lines to be sung.
+     */
+    private fun buildKaraokeMenu(
+        state: LyricsState,
+        items: MutableList<MediaBrowserCompat.MediaItem>
+    ) {
+        if (state.status != LyricsStatus.FOUND || state.lines.isEmpty()) {
+            items.add(buildTextItem("karaoke_hold", "\u266A"))
+            return
+        }
+
+        val posMs = getAaPositionMs()
+        val idx = findLineIndex(state.lines, posMs).coerceAtLeast(0)
+        val (topIdx, bottomIdx) = AaKaraokeRows.pairFor(idx, state.lines.size)
+        val topActive = topIdx == idx
+        val bottomActive = bottomIdx == idx
+
+        val topLine = state.lines.getOrNull(topIdx)
+        val bottomLine = state.lines.getOrNull(bottomIdx)
+        val topText = topLine?.text?.ifBlank { "\u266A" } ?: "\u266A"
+        val bottomText = bottomLine?.text?.ifBlank { "\u266A" } ?: "\u266A"
+
+        val topMarker = if (topActive) CURRENT_LINE_PREFIX else ""
+        val topId = if (topIdx >= 0) "line_$topIdx" else "karaoke_hold"
+        items.add(
+            buildTextItem(
+                topId,
+                "$topMarker$topText",
+                subtitle = topLine?.let { state.translatedLines?.getOrNull(topIdx)?.takeIf { t -> t.isNotBlank() } }
+            )
+        )
+
+        val bottomMarker = if (bottomActive) CURRENT_LINE_PREFIX else ""
+        val bottomId = if (bottomIdx >= 0) "line_$bottomIdx" else "karaoke_hold"
+        items.add(
+            buildTextItem(
+                bottomId,
+                AaKaraokeRows.rightAlign(bottomText, AaKaraokeRows.displayWidth(topText), bottomMarker),
+                subtitle = bottomLine?.let { state.translatedLines?.getOrNull(bottomIdx)?.takeIf { t -> t.isNotBlank() } }
+            )
+        )
     }
 
     private fun buildSyncMenu(
@@ -776,28 +828,13 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         return WindowInfo(adjustedStart, windowEnd, currentIdx)
     }
 
-    /** Keep browse rows stable until the active line approaches a window edge. */
-    private fun stableWindowStart(currentIdx: Int, lineCount: Int): Int {
-        val size = DEFAULT_WINDOW_SIZE
-        val maxStart = maxOf(0, lineCount - size)
-        if (displayedWindowStart in 0..maxStart && displayedWindowEnd > displayedWindowStart) {
-            val currentStart = displayedWindowStart
-            val currentEnd = minOf(lineCount, currentStart + size)
-            if (currentIdx < currentStart || currentIdx >= currentEnd) {
-                // Seeks and large playback jumps must make the active line
-                // visible immediately; paging is only for adjacent progress.
-                return maxOf(0, currentIdx - size / 2).coerceAtMost(maxStart)
-            }
-            if (currentIdx > currentStart && currentIdx < currentEnd - 1) return currentStart
-            val step = size - 2
-            val next = if (currentIdx >= currentEnd - 1) currentStart + step else currentStart - step
-            return next.coerceIn(0, maxStart)
-        }
-        return maxOf(0, currentIdx - size / 2).coerceAtMost(maxStart)
-    }
+    /** Pin the active line to the first row so it never moves within the list. */
+    private fun stableWindowStart(currentIdx: Int, lineCount: Int): Int =
+        currentIdx.coerceIn(0, maxOf(0, lineCount - DEFAULT_WINDOW_SIZE))
 
     private fun notifyBrowseSections(mask: Int = NOTIFY_ALL) {
         if (mask and NOTIFY_LYRICS != 0) notifyChildrenChanged(LYRICS_MENU_ID)
+        if (mask and NOTIFY_KARAOKE != 0) notifyChildrenChanged(KARAOKE_MENU_ID)
         if (mask and NOTIFY_SYNC != 0) notifyChildrenChanged(SYNC_MENU_ID)
         if (mask and NOTIFY_MORE != 0) notifyChildrenChanged(MORE_MENU_ID)
     }
@@ -853,7 +890,7 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
             detectedLanguageChanged || translationAvailabilityChanged
         ) notifyMask = notifyMask or NOTIFY_LYRICS
         if (lineChanged || statusChanged || translationAvailabilityChanged) {
-            notifyMask = notifyMask or NOTIFY_SYNC
+            notifyMask = notifyMask or NOTIFY_SYNC or NOTIFY_KARAOKE
         }
         if (statusChanged || sourceChanged || detectedLanguageChanged || translationAvailabilityChanged) {
             notifyMask = notifyMask or NOTIFY_MORE

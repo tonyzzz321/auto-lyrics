@@ -12,9 +12,10 @@ import java.util.Locale
 
 /**
  * Persistent per-track translation cache. Entries are keyed by track identity,
- * target language, engine, model, and a hash of the source lyric text, so a
- * lyric refresh or any engine-side change naturally invalidates the entry.
- * Entries never expire on their own.
+ * target language, and a hash of the source lyric text, so a lyric refresh
+ * invalidates the entry. Engine and model are recorded on the entry but not
+ * part of the key: a translation is reused across engines, and switching
+ * engines or forcing retranslation is a Manual Search apply.
  */
 class TranslationCache internal constructor(
     private val cacheDir: File,
@@ -45,7 +46,7 @@ class TranslationCache internal constructor(
         model: String
     ): CachedTranslation? {
         val sourceTextHash = sourceTextHash(lines)
-        val file = cacheFile(track, targetLanguage, engine, model, sourceTextHash)
+        val file = cacheFile(track, targetLanguage, sourceTextHash)
         if (!file.exists()) return null
 
         return try {
@@ -77,10 +78,22 @@ class TranslationCache internal constructor(
                 sourceTextHash = sourceTextHash,
                 timestamp = System.currentTimeMillis()
             )
-            cacheFile(track, result.targetLanguage, engine, model, sourceTextHash)
+            cacheFile(track, result.targetLanguage, sourceTextHash)
                 .writeText(gson.toJson(cached))
         } catch (_: Exception) {
             // cache write failures are non-fatal
+        }
+    }
+
+    /**
+     * Removes the cached translation for this exact track and lyric text, so
+     * the next translate pass re-runs the engine. Used by Manual Search apply.
+     */
+    fun delete(track: TrackInfo, lines: List<LyricLine>, targetLanguage: String) {
+        try {
+            cacheFile(track, targetLanguage, sourceTextHash(lines)).delete()
+        } catch (_: Exception) {
+            // delete failures are non-fatal
         }
     }
 
@@ -90,8 +103,6 @@ class TranslationCache internal constructor(
     private fun cacheFile(
         track: TrackInfo,
         targetLanguage: String,
-        engine: String,
-        model: String,
         sourceTextHash: String
     ): File {
         val durationSec = if (track.durationMs > 0) {
@@ -101,14 +112,12 @@ class TranslationCache internal constructor(
         }
 
         val keyParts = mutableListOf(
-            "tc1",
+            "tc2",
             normalizeCacheKeyPart(track.title),
             normalizeCacheKeyPart(track.artist),
             normalizeCacheKeyPart(track.album),
             durationSec,
             normalizeCacheKeyPart(targetLanguage),
-            engine.lowercase(Locale.US),
-            normalizeCacheKeyPart(model),
             sourceTextHash
         )
         SpotifyTrackIdentity.trackId(track)?.let { spotifyTrackId ->

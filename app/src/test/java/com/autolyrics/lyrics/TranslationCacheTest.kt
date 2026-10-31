@@ -3,6 +3,7 @@ package com.autolyrics.lyrics
 import com.autolyrics.model.LyricLine
 import com.autolyrics.model.TrackInfo
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Rule
 import org.junit.Test
@@ -59,13 +60,23 @@ class TranslationCacheTest {
     }
 
     @Test
-    fun changedTargetEngineOrModelInvalidatesEntry() {
+    fun changedTargetInvalidatesEntryButEngineAndModelAreShared() {
         val cache = TranslationCache(tempFolder.newFolder())
         cache.put(track, lines, result, engine = "llm", model = "m")
 
         assertNull(cache.get(track, lines, "ja", "llm", "m"))
-        assertNull(cache.get(track, lines, "en", "on_device", "m"))
-        assertNull(cache.get(track, lines, "en", "llm", "other-model"))
+        assertNotNull(cache.get(track, lines, "en", "on_device", "mlkit"))
+        assertNotNull(cache.get(track, lines, "en", "llm", "other-model"))
+    }
+
+    @Test
+    fun deleteRemovesTheEntryForThatTrackTextAndTarget() {
+        val cache = TranslationCache(tempFolder.newFolder())
+        cache.put(track, lines, result, engine = "llm", model = "m")
+
+        cache.delete(track, lines, "en")
+
+        assertNull(cache.get(track, lines, "en", "llm", "m"))
     }
 
     @Test

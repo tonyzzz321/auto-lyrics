@@ -192,7 +192,7 @@ Japanese data can be character-granular:
 raw timing: 君 / を / 忘 / れ / な / い
 ```
 
-`LyricWordLayout` aligns timing tokens back to `LyricLine.text`, uses Java/Android word boundaries, and applies a conservative Japanese display heuristic that merges adjacent hiragana suffixes into a preceding kanji-containing range. Multi-syllable chunk payloads therefore display closer to `君を / 忘れない` than six separate highlights. Two refinements: payloads whose Japanese tokens are syllable-sized (optionally carrying collapsed punctuation) highlight glyph-by-glyph instead of jumping in dictionary-word steps, and every highlight range sweeps through trailing punctuation/spaces up to the next token so ending punctuation is never left unlit when the line changes.
+`LyricWordLayout` aligns timing tokens back to `LyricLine.text`, uses Java/Android word boundaries, and applies a conservative Japanese display heuristic that merges adjacent hiragana suffixes into a preceding kanji-containing range. Multi-syllable chunk payloads therefore display closer to `君を / 忘れない` than six separate highlights. Two refinements: payloads whose tokens are syllable-sized for any CJK script — kana, Han, or Hangul, since SyncLRC tokenizes Korean and Chinese per character too — highlight glyph-by-glyph instead of jumping in dictionary-word steps, and every highlight range sweeps through trailing punctuation/spaces up to the next token so ending punctuation is never left unlit when the line changes.
 
 This is a display heuristic, not a morphological analyzer. The original timing tokens remain intact in state and cache. If tokens cannot be aligned to the source line, the previous separator reconstruction is used as a compatibility fallback.
 
@@ -302,6 +302,8 @@ SyncLRC uses the resolver's generic synchronized-provider confidence. It is not 
 
 `LrcParser.parseKaraoke()` accepts line timestamps such as `[00:01.00]` and timing-token timestamps such as `<00:01.25>`. Dot or colon fractional separators are tolerated.
 
+Word tokens are sorted chronologically after parsing (time order is sung order; display text follows the sort), and a line repeated with multiple timestamp tags (`[00:10.00][00:40.00]`) gets its word times shifted onto each instance instead of highlighting fully-lit from word one on repeats. Text before the first word tag (spoken intros) is attached to the first token rather than dropped.
+
 Timing tags are removed to recover exact `LyricLine.text`. Every raw substring between timing tags becomes a `LyricWord`; attached whitespace is retained so the original line can be reconstructed exactly. Line-only LRC produces no fake timing tokens.
 
 ## PetitLyrics local configuration
@@ -333,6 +335,10 @@ process environment
 
 If a required value is blank, PetitLyrics is skipped. These values are compiled into Android `BuildConfig`; keeping them out of Git does not make them secret in a distributed APK.
 
+## Settings panel
+
+The gear button toggles `layout_font_settings` in `activity_main.xml`, organized in three sections: **Phone UI** (Size, Font), **Lyrics** (Karaoke Mode, Translate Lyrics; the dynamic target/engine/status rows are inserted here relative to the translate row via `indexOfChild`), and **Sync** (Phone Sync ±50 ms, AA Sync ±50 ms + reset). Deliberately outside the panel: Manual Search and Fullscreen buttons (button bar), Jump-to-Current, and the phone fine-offset presets + Tap to Sync (live mid-song controls under the lyrics).
+
 ## Translation engines
 
 `MediaTracker.translateIfNeeded()` routes by the `translation_engine` pref (`on_device` default, `llm`). Both engines implement `TranslationEngineUi` — a shared `UiState` `StateFlow` plus a manual-retry gate — and `TranslationStatusView` observes whichever engine is active. `TranslationEngineView` is the settings row that picks the engine and configures the remote endpoint.
@@ -350,14 +356,14 @@ If a required value is blank, PetitLyrics is skipped. These values are compiled 
 
 `ManualSearchDialog` (main-screen **Manual Search** button, next to Fullscreen Lyrics) opens a dialog with editable song/artist fields pre-filled from the playing track. Search runs **LRCLIB + SyncLRC + Musixmatch**: `LrcLibClient.manualSearch` fires the queries below (LRCLIB list responses embed lyric bodies, so each response is a fully-formed candidate), and `SyncLrcClient.manualFetch` asks the aggregator with the same terms — nothing is rejected there, so its karaoke/synced/plain payload becomes one extra row (SyncLRC has no candidate-list endpoint, unlike the single-match limitation on the Musixmatch path). LRCLIB query semantics matter: structured `/search?track_name=&artist_name=` is an exact-equality filter, and free-text `q=` AND-joins every word, so a single combined `"artist title"` query returns nothing for edited terms. `manualSearch` therefore fires four queries — structured, combined free-text, title-only, artist-only — and merges/dedupes via `ManualSearch.mergeResponses` within a 10 s budget. All provider rows then pass `ManualSearch.titleIsRelevant` (normalised containment, ≥half query-token overlap, or character coverage for non-spaced scripts) so artist-wide fallback queries cannot bury the song under other recordings; filtered count appears in diagnostics. Musixmatch's list comes from `mobile.track.search` (`MusixmatchClient.manualSearch`/`parseTrackSearchResponse`); its search results carry no lyric body or duration, so those rows show `--:--` and resolve lazily on pick. Karaoke is labelled upfront when a search row carries `has_richsync` (same flag the auto macro path reads); rows without the flag are labelled Synced and may still resolve to karaoke — the applied source then says `Musixmatch · RichSync`: `applyManualLyrics` runs the hit's `fetch` lambda off-main (RichSync karaoke → line subtitle → plain body via `track.text.get`, advertisement/footer noise stripped) and reports through a callback. Rows carry their provider (`Karaoke · SyncLRC · 4:00 — …`). Applied lyrics keep one source vocabulary across providers: `Provider · Kind` (`LRCLIB · Synced`, `Musixmatch · RichSync`, …) is used for both automatic and user-picked lyrics.
 
-`ManualSearch.toHits` converts responses with `LrcParser.parseKaraoke` (word-timed uploads become `Karaoke` hits and keep their word timing; line-timed ones are `Synced`; plain-only bodies are `Plain`; noise-only items dropped, duplicate ids deduped) and `ManualSearch.rank` orders rows: best kind first, then closest duration to the playing track, then title. Selecting a row calls `MediaTracker.applyManualLyrics`, which caches into the active `LyricsCache` variant with the normal 7-day refresh under the session track key (so the override survives reloads), swaps the visible state, clears stale translated lines, and triggers translation. It is a no-op if the track changed after the search; the in-flight search job is cancelled by track changes like other fetch work. The dialog's state (edited terms, last results, selection, in-flight flag) lives in `MediaTracker.manualSearchSession` for as long as the same track plays — reopening the dialog restores it, and a track change clears it; a search finishing while the dialog is closed still records into the session.
+`ManualSearch.toHits` converts responses with `LrcParser.parseKaraoke` (word-timed uploads become `Karaoke` hits and keep their word timing; line-timed ones are `Synced`; plain-only bodies are `Plain`; noise-only items dropped, duplicate ids deduped) and `ManualSearch.rank` orders rows: best kind first, then closest duration to the playing track, then title. Selecting a row calls `MediaTracker.applyManualLyrics`, which overwrites the active `LyricsCache` variant under the session track key (so the override survives reloads permanently), deletes the cached translation for the track, swaps the visible state, clears stale translated lines, and triggers translation — a manual apply is therefore also the force-retranslation path. It is a no-op if the track changed after the search; the in-flight search job is cancelled by track changes like other fetch work. The dialog's state (edited terms, last results, selection, in-flight flag) lives in `MediaTracker.manualSearchSession` for as long as the same track plays — reopening the dialog restores it, and a track change clears it; a search finishing while the dialog is closed still records into the session.
 
 ## Cache policy
 
 Cache identity includes:
 
 ```text
-namespace v14
+namespace v16
 STANDARD or KARAOKE variant
 normalized title
 normalized artist
@@ -369,18 +375,13 @@ rounded duration seconds
 
 Mode-specific cache variants prevent a Karaoke WORD_SYNC winner from pinning standard mode and prevent a standard LRCLIB LINE_SYNC winner from hiding a richer Karaoke result.
 
-Refresh policy:
+Refresh policy: **cached lyrics are permanent.** A cache hit is final and the
+provider race never runs for that track/variant again until the entry is
+replaced. Manual Search is the user-facing refresh path: applying a pick writes
+over the cached variant, so corrected lyrics survive reloads indefinitely.
+Bumping the key prefix (`v16`) is the only global flush.
 
-- normal fully corroborated LRCLIB/PetitLyrics comparison: **7 days**,
-- incomplete/provisional comparison: **15 minutes**,
-- Karaoke with a usable selected WORD_SYNC result and otherwise complete normal comparison: **7 days**,
-- Karaoke with no usable selected WORD_SYNC result: **15 minutes**.
-
-The last rule is important for SyncLRC/LDDC-style aggregation: a temporary upstream miss should not pin LINE_SYNC in the Karaoke cache for a week.
-
-Provider clients still collapse some `NOT_FOUND` and transient-error outcomes to `null`; this can cause legitimate one-provider songs to refresh more often, but it avoids long-lived stale fallbacks.
-
-**Translation cache** (`filesDir/translation_cache`) persists translated lines per engine. Its key covers track identity (title/artist/album/duration plus Spotify track ID when present), target language, engine, model, and a SHA-256 of the concatenated source lyric text; entries never expire. A lyric refresh, a target-language change, or an engine/model switch each change the key, so a stale translation is never applied and a cache hit skips detection and network work entirely.
+**Translation cache** (`filesDir/translation_cache`) persists translated lines. Its key covers track identity (title/artist/album/duration plus Spotify track ID when present), target language, and a SHA-256 of the concatenated source lyric text; entries never expire. Engine and model are stored on the entry but deliberately *not* keyed: a translation is reused across engines, and switching engines keeps showing the existing translation until the user forces a redo via Manual Search apply (which deletes the entry for the track). A lyric text change or target-language change invalidates the entry on its own; a cache hit skips detection and network work entirely.
 
 ## Karaoke active-token timing
 
@@ -392,6 +393,8 @@ Provider clients still collapse some `NOT_FOUND` and transient-error outcomes to
 - An ended newer token never reactivates an older open-ended token.
 - Backward seeking within a line can select an earlier token again.
 
+The phone sweep (`PhoneKaraokeSweep`) scans tokens the same way rather than stopping at the first future token, so a payload quirk can no longer freeze the phone highlight while fullscreen keeps progressing. When the display-alignment heuristic declines a payload, the sweep falls back to the raw token spans (`textSpaceRanges`) instead of leaving the current line fully dim, and resolved display ranges are memoized per line because they are queried on every animation frame.
+
 Timing selection and display grouping are independent: `KaraokeTiming` chooses the raw token index, then `LyricWordLayout` chooses the visible lexical range. `displayRangesForLine` is memoized (views re-query every animation frame) and `PhoneKaraokeSweep` reads `textSpaceRanges`, which keeps the sweep stepping in token space when the credibility heuristic declines a payload. `LrcParser` sorts word tokens chronologically, shifts word times onto each repeated line tag, and attaches untagged prefix text to the first token.
 
 ## Android Auto
@@ -399,10 +402,10 @@ Timing selection and display grouping are independent: `KaraokeTiming` chooses t
 `LyricsBrowserService` exposes:
 
 ```text
-Lyrics | Sync | More
+Lyrics | Karaoke | Sync | More
 ```
 
-Lyrics is first/default. The main browse window shows 5 rows without translations and 3 with translations. Sync is a fixed 3-row timing preview with ±50 ms AA offset controls. More shows provider and metadata details.
+Lyrics is first/default. The main browse window shows 5 rows without translations and 3 with translations, with the active line pinned to the **first row** (`stableWindowStart` clamps the window start to the active index). Karaoke is a Chinese-KTV-style two-row board: odd 0-based lines on the left-justified top row, even lines right-justified below (`AaKaraokeRows.rightAlign` emulates right justification with fullwidth-space padding, width estimated per East Asian width units so mixed CJK/Latin/punctuation stays aligned); each side flips to `line + 2` when its own line finishes, `▶` marks the side being sung, and rows seek on click like Lyrics rows. Sync is a fixed 3-row timing preview with ±50 ms AA offset controls. More shows provider and metadata details.
 
 Android Auto projection activates `LyricsDemandController` for the entire projection session. Provider resolution therefore remains available even if the user navigates from Auto Lyrics to another Android Auto app; it stops only after projection disconnects unless the phone UI is still active.
 
@@ -498,7 +501,9 @@ Automated coverage should retain:
 - LLM reply parsing: JSON array, code-fence strip, numbered-line fallback, and line-count rejection,
 - LLM chunk splitting at the char budget with blank/note-only lines skipped,
 - remote base-URL normalization (`host` → `https://host/v1`, explicit paths preserved),
-- translation cache round-trip and invalidation on lyric/target/engine/model change.
+- translation cache round-trip and invalidation on lyric-text/target change only (engine/model switches deliberately reuse the stored translation),
+- karaoke word-token sorting, repeated-line word-time shift, and untagged prefix retention,
+- manual search title-relevance filtering.
 
 Manual Phone / DHU checks:
 

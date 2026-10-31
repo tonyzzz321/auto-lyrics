@@ -429,11 +429,9 @@ class MediaTracker private constructor(context: Context) {
                         translateIfNeeded(lines, track)
                     }
 
-                    val cacheAge = lyricsCache.getAge(track, cacheVariant)
-                    val refreshAfterMs = lyricsCache.getRefreshAfterMs(track, cacheVariant)
-                    if (refreshAfterMs > 0L && cacheAge < refreshAfterMs) {
-                        return@launch
-                    }
+                    // Cached lyrics are permanent; Manual Search is the
+                    // user-facing refresh path, so never silently re-fetch.
+                    return@launch
                 }
 
                 val decision = fetchBestLyrics(track, preferWordSync)
@@ -452,7 +450,6 @@ class MediaTracker private constructor(context: Context) {
                             lines = result.lines,
                             status = result.status,
                             source = result.source,
-                            refreshAfterMs = decision.refreshAfterMs,
                             variant = cacheVariant
                         )
                         _state.value = _state.value.copy(
@@ -498,8 +495,7 @@ class MediaTracker private constructor(context: Context) {
     )
 
     private data class FetchDecision(
-        val candidate: LyricsProviderCandidate?,
-        val refreshAfterMs: Long
+        val candidate: LyricsProviderCandidate?
     )
 
     private suspend fun fetchBestLyrics(
@@ -568,41 +564,17 @@ class MediaTracker private constructor(context: Context) {
             candidates = candidates,
             preferWordSync = preferWordSync
         )
-        // Musixmatch and SyncLRC are opportunistic word-sync sources. Keep the
-        // ordinary cache-health decision anchored to LRCLIB/PetitLyrics, but use a
-        // short-lived Karaoke cache when no usable word-timed result was found so
-        // a transient aggregator/provider miss does not pin LINE_SYNC for a week.
-        val providerSetComplete = if (PetitLyricsClient.isConfigured) {
-            lrcAttempt.candidate != null && petitAttempt?.candidate != null &&
-                !lrcAttempt.timedOut && !petitAttempt.timedOut
-        } else {
-            !lrcAttempt.timedOut
-        }
-        val selectedHasWordTiming = selected?.candidate?.let {
-            LyricsProviderResolver.hasUsableWordTiming(it)
-        } == true
-        val karaokeNeedsRetry = preferWordSync && !selectedHasWordTiming
-        val refreshAfterMs = if (providerSetComplete && !karaokeNeedsRetry) {
-            LyricsCache.DEFAULT_REFRESH_AFTER_MS
-        } else {
-            PROVISIONAL_CACHE_REFRESH_MS
-        }
-
         if (BuildConfig.DEBUG) {
             Log.d(
                 PROVIDER_RESOLVER_TAG,
                 selected?.let {
                     "selected=${it.candidate.provider} final=${"%.3f".format(it.finalScore)} " +
-                        "kind=${it.candidate.syncKind} mode=${if (preferWordSync) "karaoke" else "standard"} " +
-                        "cacheRefresh=${refreshAfterMs}ms"
+                        "kind=${it.candidate.syncKind} mode=${if (preferWordSync) "karaoke" else "standard"}"
                 } ?: "selected=none mode=${if (preferWordSync) "karaoke" else "standard"}"
             )
         }
 
-        FetchDecision(
-            candidate = selected?.candidate,
-            refreshAfterMs = refreshAfterMs
-        )
+        FetchDecision(candidate = selected?.candidate)
     }
 
     private suspend fun fetchProviderWithBudget(
@@ -915,9 +887,12 @@ class MediaTracker private constructor(context: Context) {
             lines = hit.lines,
             status = hit.status,
             source = hit.source,
-            refreshAfterMs = LyricsCache.DEFAULT_REFRESH_AFTER_MS,
             variant = variant
         )
+        // A manual pick is an explicit user refresh: drop any cached
+        // translation so retranslation runs against the new lyrics even if
+        // the picked text happens to match what was cached before.
+        translationCache.delete(track, hit.lines, selectedTargetLanguage())
         _state.value = _state.value.copy(
             lines = hit.lines,
             currentIndex = -1,
@@ -1070,7 +1045,6 @@ class MediaTracker private constructor(context: Context) {
     companion object {
         private const val PROVIDER_BUDGET_MS = 5_000L
         private const val MANUAL_SEARCH_BUDGET_MS = 15_000L
-        private const val PROVISIONAL_CACHE_REFRESH_MS = 15L * 60 * 1000
         private const val PROVIDER_RESOLVER_TAG = "ProviderResolver"
         private const val TRANSLATION_ENABLED_KEY = "translation_enabled"
         private const val AA_KARAOKE_ENABLED_KEY = "aa_karaoke_enabled"

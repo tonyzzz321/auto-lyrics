@@ -28,8 +28,7 @@ class LyricsCache(context: Context) {
         val lines: List<CachedLine>,
         val status: String,
         val source: String,
-        val timestamp: Long,
-        val refreshAfterMs: Long = 0L
+        val timestamp: Long
     )
 
     data class CachedLine(
@@ -84,7 +83,6 @@ class LyricsCache(context: Context) {
         lines: List<LyricLine>,
         status: LyricsStatus,
         source: String,
-        refreshAfterMs: Long = DEFAULT_REFRESH_AFTER_MS,
         variant: Variant = Variant.STANDARD
     ) {
         try {
@@ -104,43 +102,12 @@ class LyricsCache(context: Context) {
                 },
                 status = status.name,
                 source = source,
-                timestamp = System.currentTimeMillis(),
-                refreshAfterMs = refreshAfterMs.coerceAtLeast(1L)
+                timestamp = System.currentTimeMillis()
             )
             val file = cacheFile(track, variant)
             file.writeText(gson.toJson(cached))
         } catch (_: Exception) {
             // cache write failures are non-fatal
-        }
-    }
-
-    fun getAge(
-        track: TrackInfo,
-        variant: Variant = Variant.STANDARD
-    ): Long {
-        val file = cacheFile(track, variant)
-        if (!file.exists()) return Long.MAX_VALUE
-        return try {
-            val json = file.readText()
-            val cached = gson.fromJson(json, CachedResult::class.java)
-            System.currentTimeMillis() - cached.timestamp
-        } catch (_: Exception) {
-            Long.MAX_VALUE
-        }
-    }
-
-    fun getRefreshAfterMs(
-        track: TrackInfo,
-        variant: Variant = Variant.STANDARD
-    ): Long {
-        val file = cacheFile(track, variant)
-        if (!file.exists()) return 0L
-        return try {
-            val json = file.readText()
-            val cached = gson.fromJson(json, CachedResult::class.java)
-            cached.refreshAfterMs.takeIf { it > 0L } ?: DEFAULT_REFRESH_AFTER_MS
-        } catch (_: Exception) {
-            0L
         }
     }
 
@@ -164,11 +131,12 @@ class LyricsCache(context: Context) {
         }
         val key = keyParts.joinToString("|")
 
+        if (com.autolyrics.BuildConfig.DEBUG) {
+            android.util.Log.d("LyricsCache", "key=$key")
+        }
+
         val hash = key.hashCode().toUInt().toString(16)
         return File(cacheDir, "$hash.json")
     }
 
-    companion object {
-        const val DEFAULT_REFRESH_AFTER_MS = 7L * 24 * 60 * 60 * 1000
-    }
 }

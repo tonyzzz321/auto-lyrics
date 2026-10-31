@@ -464,7 +464,7 @@ class MainActivity : AppCompatActivity() {
             offsetMs > 0 -> "+"
             else -> ""
         }
-        tvDelay.text = "Phone Sync: ${sign}${offsetMs}ms"
+        tvDelay.text = "${sign}${offsetMs}ms"
 
         val canReset = offsetMs != 0L
         btnPhoneSyncReset.isEnabled = canReset

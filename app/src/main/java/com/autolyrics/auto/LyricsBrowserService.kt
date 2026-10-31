@@ -23,6 +23,8 @@ import com.autolyrics.model.LyricsState
 import com.autolyrics.model.LyricsStatus
 import com.autolyrics.model.TrackInfo
 import com.autolyrics.util.AaKaraokeRows
+import com.autolyrics.util.LyricDisplay
+import com.autolyrics.util.SungLine
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collectLatest
 
@@ -37,6 +39,8 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
     private var pendingNotify = false
     private var pendingNotifyMask = 0
     private var displayedWindowStart = -1
+    private var displayedGap = false
+    private var displayedCountdown = 0
     private var displayedWindowEnd = -1
     private var displayedCurrentIdx = -1
     private var displayedStatus: LyricsStatus? = null
@@ -121,7 +125,7 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         private const val TRANSLATION_LOADING_MESSAGE = "Loading translation…"
         private const val NOTIFY_THROTTLE_MS = 500L
         private const val SESSION_REFRESH_MS = 1500L
-        private const val PLAIN_LOOP_DELAY_MS = 2000L
+        private const val PLAIN_LOOP_DELAY_MS = 500L
         private const val NOTIFY_LYRICS = 1
         private const val NOTIFY_SYNC = 2
         private const val NOTIFY_MORE = 4
@@ -171,7 +175,15 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
             while (isActive) {
                 delay(PLAIN_LOOP_DELAY_MS)
                 val state = mediaTracker.state.value
-                if (state.isPlaying && state.status == LyricsStatus.PLAIN_ONLY && state.lines.isNotEmpty()) {
+                // PLAIN rows are position estimates and always need the tick;
+                // timed rows additionally need it for instrumental-gap flips
+                // and the outro, where MediaTracker emits nothing because no
+                // line index changes. The gate itself stays free when the
+                // window is unchanged.
+                if (state.isPlaying &&
+                    (state.status == LyricsStatus.PLAIN_ONLY || state.status == LyricsStatus.FOUND) &&
+                    state.lines.isNotEmpty()
+                ) {
                     throttledNotifyChildren(state)
                 }
             }
@@ -278,23 +290,24 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
                         mediaTracker.getCurrentPositionMs().coerceAtLeast(0)
                     } catch (_: Exception) { 0L }
 
+                    val plainCount = renderableLineCount(state.lines)
                     val estimatedIdx = if (durationMs > 0) {
-                        ((posMs.toFloat() / durationMs) * state.lines.size).toInt()
-                            .coerceIn(0, state.lines.size - 1)
+                        ((posMs.toFloat() / durationMs) * plainCount).toInt()
+                            .coerceIn(0, plainCount - 1)
                     } else { 0 }
 
                     val windowSize = DEFAULT_WINDOW_SIZE
-                    val adjStart = stableWindowStart(estimatedIdx, state.lines.size)
-                    val winEnd = minOf(state.lines.size, adjStart + windowSize)
+                    val adjStart = stableWindowStart(estimatedIdx, plainCount)
+                    val winEnd = minOf(plainCount, adjStart + windowSize)
 
                     var prevBlank = false
                     for (i in adjStart until winEnd) {
-                        val blank = state.lines[i].text.isBlank()
+                        val blank = LyricDisplay.isSymbolText(state.lines[i].text)
                         if (blank && prevBlank && i != estimatedIdx) continue
                         prevBlank = blank
-                        val text = state.lines[i].text.ifBlank { "♪" }
+                        val text = LyricDisplay.displayText(state.lines[i].text)
                         val prefix = linePrefix(i == estimatedIdx)
-                        val trans = state.translatedLines?.getOrNull(i)?.takeIf { it.isNotBlank() }
+                        val trans = translationFor(state, i, state.lines[i].text)
                         items.add(buildTextItem("line_$i", "$prefix$text", pad = true, subtitle = trans))
                     }
                 }
@@ -322,30 +335,65 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         val column = karaokeColumn()
 
         val posMs = getAaPositionMs()
-        val idx = findLineIndex(state.lines, posMs)
-        val (topIdx, bottomIdx) = AaKaraokeRows.pairFor(idx, state.lines.size)
+        val boardCount = renderableLineCount(state.lines)
+        val idx = SungLine.index(state.lines, posMs, boardCount)
+        var (topIdx, bottomIdx) = AaKaraokeRows.pairFor(idx, boardCount)
+        // Proven instrumental gap: the sung line STAYS lit on its own row and
+        // the music symbol takes the opposite slot in place of the preview.
+        // -2 is the symbol slot sentinel (inactive: no marker, no seek).
+        val boardGap = idx >= 0 && SungLine.instrumentalGap(state.lines, posMs, boardCount)
+        if (boardGap) {
+            if (bottomIdx == idx) topIdx = -2 else bottomIdx = -2
+        }
+        if (idx < 0) {
+            // Instrumental stretch (intro or interlude): the next line keeps
+            // the row it will be sung from (even indices ride the bottom),
+            // and the music symbol rides the other slot as the active row.
+            val anchorNext = (findLineIndex(state.lines, posMs) + 1).coerceAtMost(boardCount)
+            val nextIdx = if (anchorNext < boardCount) anchorNext else -1
+            when {
+                nextIdx < 0 -> { topIdx = -1; bottomIdx = -1 }
+                nextIdx % 2 == 0 -> { topIdx = -1; bottomIdx = nextIdx }
+                else -> { topIdx = nextIdx; bottomIdx = -1 }
+            }
+        }
         val topActive = topIdx == idx
         val bottomActive = bottomIdx == idx
+        // Instrumental stretches (intro or proven gap) show a countdown
+        // instead of the static triple: one glyph per second until the next
+        // line, max three, on the marker-free lead that still holds the
+        // ▶ advance.
+        val cdSym = if (idx < 0 || boardGap)
+            LyricDisplay.countdownSymbol(SungLine.countdownSeconds(state.lines, posMs, boardCount))
+        else null
 
+        // A missing side is the virtual slot: sung during the intro (symbol),
+        // simply empty past the last lyric so the outro shows no symbols.
+        // The -2 gap slot renders the symbol on an idle lead.
         val topLine = state.lines.getOrNull(topIdx)
         val bottomLine = state.lines.getOrNull(bottomIdx)
-        val topText = topLine?.text?.ifBlank { "\u266A" } ?: "\u266A"
-        val bottomText = bottomLine?.text?.ifBlank { "\u266A" } ?: "\u266A"
+        val topSymbolSlot = topIdx == -2
+        val bottomSymbolSlot = bottomIdx == -2
+        val topText = topLine?.let { LyricDisplay.displayText(it.text) }
+            ?: (if (topSymbolSlot) cdSym.orEmpty()
+                else cdSym.takeIf { topActive }.orEmpty())
+        val bottomText = bottomLine?.let { LyricDisplay.displayText(it.text) }
+            ?: (if (bottomSymbolSlot) cdSym.orEmpty()
+                else cdSym.takeIf { bottomActive }.orEmpty())
 
         val translationActive = state.translatedLines?.isNotEmpty() == true
-        val topTranslation = topLine?.let {
-            state.translatedLines?.getOrNull(topIdx)?.takeIf { t -> t.isNotBlank() }
-        } ?: "♪".takeIf { topText == "♪" && translationActive }
-        val bottomTranslation = bottomLine?.let {
-            state.translatedLines?.getOrNull(bottomIdx)?.takeIf { t -> t.isNotBlank() }
-        }
+        val cdTrans = cdSym?.takeIf { translationActive }
+        val topTranslation = topLine?.let { translationFor(state, topIdx, it.text) }
+            ?: (if (topSymbolSlot) cdTrans else cdTrans.takeIf { topActive })
+        val bottomTranslation = bottomLine?.let { translationFor(state, bottomIdx, it.text) }
+            ?: (if (bottomSymbolSlot) cdTrans else cdTrans.takeIf { bottomActive })
 
         // The host sizes title and subtitle glyphs independently per row
         // (live hosts render the same design's subtitle at ~0.7x or ~1.0x of
         // the title), so padding across the two fields can never hold an
         // edge. One multi-line title shares a single font scale, making the
         // padded tails of both lines land on the same edge by construction.
-        val topMarker = if (topActive) CURRENT_LINE_PREFIX else IDLE_LINE_PREFIX
+        val topMarker = if (topActive && idx >= 0) CURRENT_LINE_PREFIX else IDLE_LINE_PREFIX
         val topId = if (topIdx >= 0) "line_$topIdx" else "karaoke_hold"
         items.add(
             buildTextItem(
@@ -363,7 +411,7 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         )
 
         val bottomMarker = AaKaraokeRows.markerFor(
-            bottomActive,
+            bottomActive && idx >= 0,
             bottomText,
             column,
             CURRENT_LINE_PREFIX
@@ -412,38 +460,41 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
             )
 
             val posMs = getAaPositionMs()
-            val idx = if (state.status == LyricsStatus.FOUND) {
-                findLineIndex(state.lines, posMs)
+            val syncCount = renderableLineCount(state.lines)
+            val rawIdx = if (state.status == LyricsStatus.FOUND) {
+                SungLine.index(state.lines, posMs, syncCount)
             } else {
                 val durationMs = state.track?.durationMs ?: 0
                 if (durationMs > 0) {
-                    ((posMs.toFloat() / durationMs) * state.lines.size).toInt()
-                        .coerceIn(0, state.lines.size - 1)
+                    ((posMs.toFloat() / durationMs) * syncCount).toInt()
+                        .coerceIn(0, syncCount - 1)
                 } else 0
             }
+            val idx = rawIdx
 
             // Current line pinned first: the window reads forward from the line
             // being sung; at the song end it shows fewer rows, never back-fills.
             if (idx < 0) {
-                val introTrans = "♪".takeIf { state.translatedLines?.isNotEmpty() == true }
+                val introTrans = translationFor(state, -1, "")
                 items.add(
                     buildTextItem(
                         "sync_line_intro",
-                        "$CURRENT_LINE_PREFIX♪",
+                        "$CURRENT_LINE_PREFIX${LyricDisplay.MUSIC_SYMBOL}",
                         pad = true,
                         subtitle = introTrans
                     )
                 )
-                var prevBlank = true
-                for (i in 0 until minOf(state.lines.size, SYNC_WINDOW_SIZE - 1)) {
+                val anchorNext = (findLineIndex(state.lines, posMs) + 1).coerceAtMost(syncCount)
+                var prevSymbol = true
+                for (i in anchorNext until minOf(syncCount, anchorNext + SYNC_WINDOW_SIZE - 1)) {
                     val line = state.lines[i]
-                    if (line.text.isBlank() && prevBlank) continue
-                    prevBlank = line.text.isBlank()
-                    val trans = state.translatedLines?.getOrNull(i)?.takeIf { it.isNotBlank() }
+                    if (LyricDisplay.isSymbolText(line.text) && prevSymbol) continue
+                    prevSymbol = LyricDisplay.isSymbolText(line.text)
+                    val trans = translationFor(state, i, line.text)
                     items.add(
                         buildTextItem(
                             "sync_line_$i",
-                            "$IDLE_LINE_PREFIX${line.text.ifBlank { "♪" }}",
+                            "$IDLE_LINE_PREFIX${LyricDisplay.displayText(line.text)}",
                             pad = true,
                             subtitle = trans
                         )
@@ -451,18 +502,19 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
                 }
                 return
             }
-            val windowEnd = minOf(state.lines.size, idx + SYNC_WINDOW_SIZE)
+            val gap = SungLine.instrumentalGap(state.lines, posMs, syncCount)
+            val windowEnd = minOf(syncCount, idx + SYNC_WINDOW_SIZE - (if (gap) 1 else 0))
             val adjustedStart = idx
 
-            var prevBlank = false
+            var prevSymbol = false
             for (i in adjustedStart until windowEnd) {
                 val line = state.lines[i]
                 val isCurrent = i == idx
-                val blank = line.text.isBlank()
-                if (blank && prevBlank && !isCurrent) continue
-                prevBlank = blank
-                val text = line.text.ifBlank { "♪" }
-                val trans = state.translatedLines?.getOrNull(i)?.takeIf { it.isNotBlank() }
+                val symbol = LyricDisplay.isSymbolText(line.text)
+                if (symbol && prevSymbol && !isCurrent) continue
+                prevSymbol = symbol
+                val text = LyricDisplay.displayText(line.text)
+                val trans = translationFor(state, i, line.text)
                 items.add(
                     buildTextItem(
                         "sync_line_$i",
@@ -471,6 +523,16 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
                         subtitle = trans
                     )
                 )
+                if (isCurrent && gap) {
+                    items.add(
+                        buildTextItem(
+                            "sync_line_gap",
+                            "$IDLE_LINE_PREFIX${LyricDisplay.MUSIC_SYMBOL}",
+                            pad = true,
+                            subtitle = translationFor(state, -1, "")
+                        )
+                    )
+                }
             }
 
             items.add(
@@ -509,6 +571,7 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
             .trim()
             .ifBlank { "—" }
         items.add(buildTextItem("more_provider", "Provider", subtitle = provider))
+
 
         val syncStatus = when (state.status) {
             LyricsStatus.FOUND -> "Synced"
@@ -609,29 +672,48 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
     ) {
         val lines = state.lines
         if (lines.isEmpty()) {
-            items.add(buildTextItem("empty", "♪"))
+            items.add(buildTextItem("empty", LyricDisplay.MUSIC_SYMBOL))
             return
         }
 
+        val count = renderableLineCount(lines)
         val posMs = getAaPositionMs()
-        val aaCurrentIdx = findLineIndex(lines, posMs)
+        // Past the last real lyric the outro plays under it: the sung line
+        // stays on the final lyric instead of advancing into symbol rows.
+        val aaCurrentIdx = SungLine.index(lines, posMs, count)
         val windowSize = DEFAULT_WINDOW_SIZE
+        val cdSym = if (aaCurrentIdx < 0 || SungLine.instrumentalGap(lines, posMs, count))
+            LyricDisplay.countdownSymbol(SungLine.countdownSeconds(lines, posMs, count))
+        else null
+        val cdTrans = cdSym?.takeIf { state.translatedLines?.isNotEmpty() == true }
 
         if (aaCurrentIdx < 0) {
+            // Mid-song instrumental gaps preview from the line AFTER the gap,
+            // not from the top of the song.
+            val anchorNext = (findLineIndex(lines, posMs) + 1).coerceAtMost(count)
             // Instrumental intro: the sung row is the music symbol until the
             // first timed line starts, with the coming lines previewed below.
-            val introTrans = "♪".takeIf { state.translatedLines?.isNotEmpty() == true }
             items.add(
-                buildTextItem("line_intro", "$CURRENT_LINE_PREFIX♪", pad = true, subtitle = introTrans)
+                buildTextItem(
+                    "line_intro",
+                    "$IDLE_LINE_PREFIX$cdSym",
+                    pad = true,
+                    subtitle = cdTrans
+                )
             )
-            var prevBlank = true
-            for (i in 0 until minOf(lines.size, windowSize - 1)) {
+            var prevSymbol = true
+            for (i in anchorNext until minOf(count, anchorNext + windowSize - 1)) {
                 val line = lines[i]
-                if (line.text.isBlank() && prevBlank) continue
-                prevBlank = line.text.isBlank()
-                val trans = state.translatedLines?.getOrNull(i)?.takeIf { it.isNotBlank() }
+                if (LyricDisplay.isSymbolText(line.text) && prevSymbol) continue
+                prevSymbol = LyricDisplay.isSymbolText(line.text)
+                val trans = translationFor(state, i, line.text)
                 items.add(
-                    buildTextItem("line_$i", "$IDLE_LINE_PREFIX${line.text.ifBlank { "♪" }}", pad = true, subtitle = trans)
+                    buildTextItem(
+                        "line_$i",
+                        "$IDLE_LINE_PREFIX${LyricDisplay.displayText(line.text)}",
+                        pad = true,
+                        subtitle = trans
+                    )
                 )
             }
             return
@@ -639,25 +721,37 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
 
         // The sung line is always the first lyric row; near the song end the
         // window simply shows fewer rows instead of back-filling old lines.
+        // A proven instrumental gap INSERTS a music-symbol row under the
+        // (still lit) sung line rather than swapping the sung row out.
+        val gap = SungLine.instrumentalGap(lines, posMs, count)
         val adjustedStart = aaCurrentIdx
-        val windowEnd = minOf(lines.size, adjustedStart + windowSize)
+        val windowEnd = minOf(count, adjustedStart + windowSize - (if (gap) 1 else 0))
 
-        var prevBlank = false
+        var prevSymbol = false
         for (i in adjustedStart until windowEnd) {
             val line = lines[i]
             val isCurrent = i == aaCurrentIdx
-            // Several blank lines can follow one another (interludes, outros);
-            // they mean the same thing as one, so consecutive music symbols
-            // collapse to a single row. The line being sung is never skipped.
-            val blank = line.text.isBlank()
-            if (blank && prevBlank && !isCurrent) continue
-            prevBlank = blank
+            // Consecutive interlude symbols mean the same thing as one, so
+            // they collapse to a single row. The line being sung never skips.
+            val symbol = LyricDisplay.isSymbolText(line.text)
+            if (symbol && prevSymbol && !isCurrent) continue
+            prevSymbol = symbol
             val prefix = linePrefix(isCurrent)
 
-            val text = line.text.ifBlank { "♪" }
+            val text = LyricDisplay.displayText(line.text)
 
-            val trans = state.translatedLines?.getOrNull(i)?.takeIf { it.isNotBlank() }
+            val trans = translationFor(state, i, line.text)
             items.add(buildTextItem("line_$i", "$prefix$text", pad = true, subtitle = trans))
+            if (isCurrent && gap) {
+                items.add(
+                    buildTextItem(
+                        "line_gap",
+                        "$IDLE_LINE_PREFIX$cdSym",
+                        pad = true,
+                        subtitle = cdTrans
+                    )
+                )
+            }
         }
     }
 
@@ -721,6 +815,29 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         }
     }
 
+    /**
+     * Line count for display purposes: trailing music-symbol lines (outros)
+     * are dropped, so the last real lyric stays the sung line while the song
+     * plays out instead of showing a run of symbol rows.
+     */
+    private fun renderableLineCount(lines: List<LyricLine>): Int {
+        val last = LyricDisplay.lastMeaningfulIndex(lines)
+        return if (last < 0) lines.size else last + 1
+    }
+
+    /**
+     * Translation subtitle for a rendered line. Translators pass music
+     * symbols through unchanged or skip them, so a symbol line's subtitle
+     * falls back to the symbol itself whenever translations are active.
+     */
+    private fun translationFor(state: LyricsState, index: Int, lineText: String): String? {
+        val active = state.translatedLines?.isNotEmpty() == true
+        if (LyricDisplay.isSymbolText(lineText)) {
+            return LyricDisplay.MUSIC_SYMBOL.takeIf { active }
+        }
+        return state.translatedLines?.getOrNull(index)?.takeIf { it.isNotBlank() }
+    }
+
     private fun findLineIndex(lines: List<LyricLine>, posMs: Long): Int {
         var idx = -1
         for (i in lines.indices) {
@@ -751,7 +868,9 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
 
         var subtitle = when (state.status) {
             // Intro: preview the first line while the title still shows the track.
-            LyricsStatus.FOUND -> state.lines.firstOrNull()?.text.orEmpty()
+            // Intro (and outro past the last line's end): track identity
+            // alone — title and artist, no lyrics text.
+            LyricsStatus.FOUND -> ""
             LyricsStatus.LOADING -> "Loading lyrics…"
             LyricsStatus.NOT_FOUND -> "No lyrics found"
             LyricsStatus.ERROR -> "Error loading lyrics"
@@ -797,7 +916,12 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         val endMs: Long
         when (state.status) {
             LyricsStatus.FOUND -> {
-                idx = findLineIndex(lines, posMs)
+                // Same policy as the browse tabs: the outro keeps the last
+                // real lyric lit... until its END (payload word ends, or a
+                // 5 s fallback), after which the card shows track identity.
+                val cardCount = renderableLineCount(lines)
+                if (SungLine.pastLastLineEnd(lines, cardCount, posMs)) return null
+                idx = SungLine.index(lines, posMs, cardCount)
                 if (idx < 0) return null
                 startMs = lines[idx].timeMs
                 val next = lines.getOrNull(idx + 1)?.timeMs
@@ -843,7 +967,8 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         // the displayed line stable there; word-level timing remains available
         // to the phone UI and Performance view.
         val budget = TITLE_MAX_WIDTH
-        val displayLine = line.text.ifBlank { line.words.joinToString(" ") { it.text } }
+        val displayLine = LyricDisplay.displayText(line.text)
+            .ifBlank { line.words.joinToString(" ") { it.text } }
         val chunkTexts = NowPlayingText.chunkDisplayText(displayLine, budget)
         val loadingTranslation = translationChunk == null && translationInFlight()
 
@@ -973,31 +1098,51 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
 
     // --- Throttled browse tree updates ---
 
-    private data class WindowInfo(val start: Int, val end: Int, val currentIdx: Int)
+    private data class WindowInfo(
+        val start: Int,
+        val end: Int,
+        val currentIdx: Int,
+        val gap: Boolean = false,
+        val countdown: Int = 0
+    )
 
     private fun computeWindow(state: LyricsState): WindowInfo {
         val lines = state.lines
         if (lines.isEmpty()) return WindowInfo(-1, -1, -1)
 
         val isPlain = state.status == LyricsStatus.PLAIN_ONLY
-        val currentIdx = if (isPlain) {
+        val winSize = DEFAULT_WINDOW_SIZE
+        if (isPlain) {
+            val plainCount = renderableLineCount(lines)
             val durationMs = state.track?.durationMs ?: 0
             val posMs = try {
                 mediaTracker.getCurrentPositionMs().coerceAtLeast(0)
             } catch (_: Exception) { 0L }
-            if (durationMs > 0) {
-                ((posMs.toFloat() / durationMs) * lines.size).toInt()
-                    .coerceIn(0, lines.size - 1)
+            val estimated = if (durationMs > 0) {
+                ((posMs.toFloat() / durationMs) * plainCount).toInt()
+                    .coerceIn(0, plainCount - 1)
             } else 0
-        } else {
-            val posMs = getAaPositionMs()
-            findLineIndex(lines, posMs).coerceAtLeast(0)
+            val start = stableWindowStart(estimated, plainCount)
+            return WindowInfo(start, minOf(plainCount, start + winSize), estimated)
         }
 
-        val winSize = DEFAULT_WINDOW_SIZE
-        val adjustedStart = stableWindowStart(currentIdx, lines.size)
-        val windowEnd = minOf(lines.size, adjustedStart + winSize)
-        return WindowInfo(adjustedStart, windowEnd, currentIdx)
+        // Mirror buildWindowedLyrics exactly: a change here must imply a
+        // visible row change, or the throttled refresh gate swallows it (the
+        // intro row clamped to line 0 used to mask the intro -> first-line
+        // flip, leaving the symbol painted through the first verse).
+        val count = renderableLineCount(lines)
+        val posMs = getAaPositionMs()
+        val raw = findLineIndex(lines, posMs)
+        val idx = SungLine.index(lines, posMs, count)
+        return if (idx < 0) {
+            val anchor = (raw + 1).coerceAtMost(count)
+            WindowInfo(anchor, minOf(count, anchor + winSize - 1), -1,
+                countdown = SungLine.countdownSeconds(lines, posMs, count))
+        } else {
+            val gap = SungLine.instrumentalGap(lines, posMs, count)
+            WindowInfo(idx, minOf(count, idx + winSize - (if (gap) 1 else 0)), idx, gap,
+                countdown = if (gap) SungLine.countdownSeconds(lines, posMs, count) else 0)
+        }
     }
 
     /** Pin the active line to the first row so it never moves within the list. */
@@ -1015,6 +1160,8 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         displayedWindowStart = -1
         displayedWindowEnd = -1
         displayedCurrentIdx = -1
+        displayedGap = false
+        displayedCountdown = 0
         displayedSource = null
         displayedDetectedLanguage = null
         displayedHasTranslation = false
@@ -1035,6 +1182,7 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
             displayedWindowStart = -1
             displayedWindowEnd = -1
             displayedCurrentIdx = -1
+            displayedGap = false
             displayedStatus = state.status
             displayedTrack = state.track
             displayedSource = state.source
@@ -1051,18 +1199,28 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         val win = computeWindow(state)
         val windowChanged = win.start != displayedWindowStart || win.end != displayedWindowEnd
         val lineChanged = win.currentIdx != displayedCurrentIdx
-        if (!windowChanged && !lineChanged && !statusChanged && !sourceChanged &&
-            !detectedLanguageChanged && !translationAvailabilityChanged
+        val gapChanged = win.gap != displayedGap
+        // The countdown row's text ticks once per second; sync's static
+        // symbol rows don't carry it, so only lyrics/karaoke re-render.
+        val countdownChanged = win.countdown != displayedCountdown
+        if (!windowChanged && !lineChanged && !gapChanged && !countdownChanged &&
+            !statusChanged && !sourceChanged && !detectedLanguageChanged &&
+            !translationAvailabilityChanged
         ) {
             return
         }
 
         var notifyMask = 0
-        if (windowChanged || lineChanged || statusChanged || sourceChanged ||
-            detectedLanguageChanged || translationAvailabilityChanged
+        if (windowChanged || lineChanged || gapChanged || countdownChanged || statusChanged ||
+            sourceChanged || detectedLanguageChanged || translationAvailabilityChanged
         ) notifyMask = notifyMask or NOTIFY_LYRICS
-        if (lineChanged || statusChanged || translationAvailabilityChanged) {
-            notifyMask = notifyMask or NOTIFY_SYNC or NOTIFY_KARAOKE
+        if (lineChanged || gapChanged || statusChanged || translationAvailabilityChanged) {
+            notifyMask = notifyMask or NOTIFY_SYNC
+        }
+        if (lineChanged || gapChanged || countdownChanged || statusChanged ||
+            translationAvailabilityChanged
+        ) {
+            notifyMask = notifyMask or NOTIFY_KARAOKE
         }
         if (statusChanged || sourceChanged || detectedLanguageChanged || translationAvailabilityChanged) {
             notifyMask = notifyMask or NOTIFY_MORE
@@ -1071,6 +1229,8 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         displayedWindowStart = win.start
         displayedWindowEnd = win.end
         displayedCurrentIdx = win.currentIdx
+        displayedGap = win.gap
+        displayedCountdown = win.countdown
         displayedStatus = state.status
         displayedSource = state.source
         displayedDetectedLanguage = state.detectedLanguage

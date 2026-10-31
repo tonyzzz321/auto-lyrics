@@ -12,6 +12,7 @@ import android.view.View
 import android.view.accessibility.AccessibilityEvent
 import com.autolyrics.lyrics.KaraokeTiming
 import com.autolyrics.model.LyricLine
+import com.autolyrics.util.LyricDisplay
 import com.autolyrics.util.LyricWordLayout
 import kotlin.math.PI
 import kotlin.math.abs
@@ -252,7 +253,7 @@ class PerformanceLyricsView @JvmOverloads constructor(
 
     private fun renderedText(line: LyricLine): RenderedText {
         if (line.words.isEmpty()) {
-            return RenderedText(line.text.ifBlank { "♪" }, IntArray(0), IntArray(0))
+            return RenderedText(LyricDisplay.displayText(line.text), IntArray(0), IntArray(0))
         }
 
         val rendered = LyricWordLayout.renderedLine(line)

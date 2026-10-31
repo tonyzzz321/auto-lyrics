@@ -529,9 +529,8 @@
 
             <TextView
                 android:id="@+id/tv_delay"
-                android:layout_width="0dp"
+                android:layout_width="56dp"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
                 android:layout_marginStart="4dp"
                 android:layout_marginEnd="4dp"
                 android:text="0ms"
@@ -557,6 +556,25 @@
                 android:minWidth="0dp"
                 android:padding="0dp"
                 style="?attr/materialButtonOutlinedStyle" />
+
+            <Button
+                android:id="@+id/btn_phone_delay_reset"
+                android:layout_width="36dp"
+                android:layout_height="34dp"
+                android:layout_marginStart="4dp"
+                android:text="⟳"
+                android:textSize="14sp"
+                android:textColor="#D7A0A8"
+                android:backgroundTint="#4A252C"
+                android:contentDescription="Reset phone lyric timing offset"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:textAllCaps="false"
+                android:minWidth="0dp"
+                android:padding="0dp"
+                android:enabled="false"
+                android:alpha="0.35"
+                style="?attr/materialButtonOutlinedStyle" />
         </LinearLayout>
 
         <!-- AA Sync offset row -->
@@ -578,6 +596,7 @@
                 android:id="@+id/info_aa_offset"
                 android:layout_width="22dp"
                 android:layout_height="22dp"
+                android:layout_marginStart="4dp"
                 android:text="ⓘ"
                 android:textColor="#777792"
                 android:textSize="12sp"
@@ -608,9 +627,8 @@
 
             <TextView
                 android:id="@+id/tv_aa_delay"
-                android:layout_width="0dp"
+                android:layout_width="56dp"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
                 android:layout_marginStart="4dp"
                 android:layout_marginEnd="4dp"
                 android:text="0ms"
@@ -676,6 +694,7 @@
                 android:id="@+id/info_karaoke_edge"
                 android:layout_width="22dp"
                 android:layout_height="22dp"
+                android:layout_marginStart="4dp"
                 android:text="ⓘ"
                 android:textColor="#777792"
                 android:textSize="12sp"
@@ -690,7 +709,7 @@
 
             <Button
                 android:id="@+id/btn_karaoke_edge_minus"
-                android:layout_width="40dp"
+                android:layout_width="48dp"
                 android:layout_height="34dp"
                 android:text="◀"
                 android:textSize="12sp"
@@ -706,8 +725,10 @@
 
             <TextView
                 android:id="@+id/tv_karaoke_edge"
-                android:layout_width="44dp"
+                android:layout_width="56dp"
                 android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:layout_marginEnd="4dp"
                 android:gravity="center"
                 android:text="+0"
                 android:textColor="#CCCCDD"
@@ -715,7 +736,7 @@
 
             <Button
                 android:id="@+id/btn_karaoke_edge_plus"
-                android:layout_width="40dp"
+                android:layout_width="48dp"
                 android:layout_height="34dp"
                 android:text="▶"
                 android:textSize="12sp"
@@ -727,6 +748,25 @@
                 android:textAllCaps="false"
                 android:minWidth="0dp"
                 android:padding="0dp"
+                style="?attr/materialButtonOutlinedStyle" />
+
+            <Button
+                android:id="@+id/btn_karaoke_edge_reset"
+                android:layout_width="36dp"
+                android:layout_height="34dp"
+                android:layout_marginStart="4dp"
+                android:text="⟳"
+                android:textSize="14sp"
+                android:textColor="#D7A0A8"
+                android:backgroundTint="#4A252C"
+                android:contentDescription="Reset the Android Auto Karaoke board edge nudge"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:textAllCaps="false"
+                android:minWidth="0dp"
+                android:padding="0dp"
+                android:enabled="false"
+                android:alpha="0.35"
                 style="?attr/materialButtonOutlinedStyle" />
         </LinearLayout>
     </LinearLayout>

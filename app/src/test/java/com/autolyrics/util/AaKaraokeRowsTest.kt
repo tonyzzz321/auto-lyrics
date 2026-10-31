@@ -8,20 +8,20 @@ class AaKaraokeRowsTest {
 
     @Test
     fun `active even line keeps top and previews odd line below`() {
-        assertEquals(0 to 1, AaKaraokeRows.pairFor(0, 10))
-        assertEquals(4 to 5, AaKaraokeRows.pairFor(4, 10))
+        assertEquals(1 to 0, AaKaraokeRows.pairFor(0, 10))
+        assertEquals(5 to 4, AaKaraokeRows.pairFor(4, 10))
     }
 
     @Test
     fun `even active index on top previews the odd line below`() {
-        assertEquals(2 to 3, AaKaraokeRows.pairFor(2, 10))
+        assertEquals(3 to 2, AaKaraokeRows.pairFor(2, 10))
     }
 
     @Test
-    fun `odd active index sits on bottom side`() {
+    fun `odd active index sits on top side`() {
         val (top, bottom) = AaKaraokeRows.pairFor(3, 10)
-        assertEquals(4, top)
-        assertEquals(3, bottom)
+        assertEquals(3, top)
+        assertEquals(4, bottom)
     }
 
     @Test
@@ -32,17 +32,17 @@ class AaKaraokeRowsTest {
     }
 
     @Test
-    fun `song ending on an odd line leaves the top preview out of range`() {
+    fun `song ending on an odd line leaves the bottom preview out of range`() {
         val (top, bottom) = AaKaraokeRows.pairFor(9, 10)
-        assertEquals(10, top)
-        assertEquals(9, bottom)
+        assertEquals(9, top)
+        assertEquals(-1, bottom)
     }
 
     @Test
-    fun `song ending on an even line leaves the bottom preview out of range`() {
+    fun `song ending on an even line leaves the top preview out of range`() {
         val (top, bottom) = AaKaraokeRows.pairFor(8, 9)
-        assertEquals(8, top)
-        assertEquals(-1, bottom)
+        assertEquals(-1, top)
+        assertEquals(8, bottom)
     }
 
     @Test
@@ -149,12 +149,15 @@ class AaKaraokeRowsTest {
         assertEquals(42, AaKaraokeRows.columnFromIconSize(143, 0))
         // Bigger head unit (proportional scaling) widens the column.
         assertEquals(59, AaKaraokeRows.columnFromIconSize(200, 0))
-        assertEquals(35, AaKaraokeRows.columnFromIconSize(120, 0))
+        assertEquals(40, AaKaraokeRows.columnFromIconSize(120, 0))
         // No hint keeps the fallback column; edge always layers on top.
         assertEquals(45, AaKaraokeRows.columnFromIconSize(-1, 3))
         assertEquals(44, AaKaraokeRows.columnFromIconSize(143, 2))
         // Clamped so wild hints can't produce wrap-prone columns.
         assertEquals(64, AaKaraokeRows.columnFromIconSize(500, 0))
+        // Production head unit shipped icon=56 but rows at DHU-scale capacity;
+        // the floor keeps its board justified.
+        assertEquals(40, AaKaraokeRows.columnFromIconSize(56, 0))
         assertEquals(24, AaKaraokeRows.columnFromIconSize(60, -30))
     }
 

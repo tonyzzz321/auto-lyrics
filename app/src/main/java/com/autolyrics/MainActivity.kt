@@ -41,6 +41,7 @@ import com.autolyrics.model.LyricsState
 import com.autolyrics.model.LyricsStatus
 import com.autolyrics.ui.KaraokeSweepSpan
 import com.autolyrics.ui.PhoneKaraokeSweep
+import com.autolyrics.util.LyricDisplay
 import com.autolyrics.util.SyncCalibration
 import com.google.android.material.snackbar.Snackbar
 import kotlinx.coroutines.launch
@@ -70,6 +71,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var switchTranslation: SwitchCompat
     private lateinit var tvAaDelay: TextView
     private lateinit var btnAaDelayReset: Button
+    private lateinit var btnPhoneDelayReset: Button
+    private lateinit var btnKaraokeEdgeReset: Button
     private lateinit var btnJumpToCurrent: Button
     private lateinit var prefs: SharedPreferences
     private var lastScrolledIndex = -1
@@ -152,6 +155,7 @@ class MainActivity : AppCompatActivity() {
         delayBar = findViewById(R.id.layout_delay)
         tvDelay = findViewById(R.id.tv_delay)
         btnPhoneSyncReset = findViewById(R.id.btn_delay_reset)
+        btnPhoneDelayReset = findViewById(R.id.btn_phone_delay_reset)
         divider = findViewById(R.id.divider)
 
         ivAlbumArt.clipToOutline = true
@@ -169,16 +173,9 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btn_delay_plus).setOnClickListener {
             adjustPhoneOffset(PHONE_SYNC_STEP_MS)
         }
-        btnPhoneSyncReset.setOnClickListener {
-            val previousOffset = mediaTracker.state.value.offsetMs
-            if (previousOffset == 0L) return@setOnClickListener
-
-            dismissUndoSnackbar()
-            mediaTracker.resetOffset()
-            showUndoSnackbar("Phone Sync reset") {
-                mediaTracker.setOffset(previousOffset)
-            }
-        }
+        val phoneSyncReset = { resetPhoneSyncOffset() }
+        btnPhoneSyncReset.setOnClickListener { phoneSyncReset() }
+        btnPhoneDelayReset.setOnClickListener { phoneSyncReset() }
 
         fontSettingsPanel = findViewById(R.id.layout_font_settings)
         tvFontSize = findViewById(R.id.tv_font_size)
@@ -236,6 +233,7 @@ class MainActivity : AppCompatActivity() {
         switchAaKaraoke = findViewById(R.id.switch_aa_karaoke)
         tvAaDelay = findViewById(R.id.tv_aa_delay)
         btnAaDelayReset = findViewById(R.id.btn_aa_delay_reset)
+        btnKaraokeEdgeReset = findViewById(R.id.btn_karaoke_edge_reset)
 
         switchAaKaraoke.isChecked = prefs.getBoolean("aa_karaoke_enabled", true)
         aaOffsetMs = prefs.getLong(AA_OFFSET_PREF_KEY, 0L)
@@ -266,6 +264,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btn_karaoke_edge_plus).setOnClickListener {
             adjustKaraokeEdge(1)
         }
+        btnKaraokeEdgeReset.setOnClickListener { resetKaraokeEdge() }
         btnAaDelayReset.setOnClickListener {
             val previousOffset = aaOffsetMs
             if (previousOffset == 0L) return@setOnClickListener
@@ -375,9 +374,10 @@ class MainActivity : AppCompatActivity() {
                             sb.append("─────────────────────\n\n")
                             val dimColor = state.albumColors?.textDim ?: DEFAULT_DIM
                             state.lines.forEachIndexed { i, line ->
-                                sb.append("${line.text}\n")
+                                sb.append(LyricDisplay.displayText(line.text).toString() + "\n")
                                 if (hasTrans) {
-                                    val tl = state.translatedLines?.getOrNull(i)
+                                    val tl = state.translatedLines?.getOrNull(i)?.takeIf { it.isNotBlank() }
+                                        ?: LyricDisplay.MUSIC_SYMBOL.takeIf { LyricDisplay.isSymbolText(line.text) }
                                     if (!tl.isNullOrBlank()) {
                                         val tlStart = sb.length
                                         sb.append("$tl\n")
@@ -461,9 +461,33 @@ class MainActivity : AppCompatActivity() {
         mediaTracker.adjustOffset(deltaMs)
     }
 
+    private fun resetPhoneSyncOffset() {
+        val previousOffset = mediaTracker.state.value.offsetMs
+        if (previousOffset == 0L) return
+
+        dismissUndoSnackbar()
+        mediaTracker.resetOffset()
+        showUndoSnackbar("Phone Sync reset") {
+            mediaTracker.setOffset(previousOffset)
+        }
+    }
+
+    private fun resetKaraokeEdge() {
+        val previous = prefs.getInt(LyricsBrowserService.KARAOKE_EDGE_PREF_KEY, 0)
+        if (previous == 0) return
+
+        dismissUndoSnackbar()
+        prefs.edit().putInt(LyricsBrowserService.KARAOKE_EDGE_PREF_KEY, 0).apply()
+        updateKaraokeEdgeDisplay()
+        showUndoSnackbar("Karaoke edge reset") {
+            prefs.edit().putInt(LyricsBrowserService.KARAOKE_EDGE_PREF_KEY, previous).apply()
+            updateKaraokeEdgeDisplay()
+        }
+    }
+
     private fun adjustKaraokeEdge(delta: Int) {
         val current = prefs.getInt(LyricsBrowserService.KARAOKE_EDGE_PREF_KEY, 0)
-        val updated = (current + delta).coerceIn(-8, 8)
+        val updated = (current + delta).coerceIn(-16, 16)
         if (updated == current) return
         prefs.edit().putInt(LyricsBrowserService.KARAOKE_EDGE_PREF_KEY, updated).apply()
         updateKaraokeEdgeDisplay()
@@ -472,6 +496,8 @@ class MainActivity : AppCompatActivity() {
     private fun updateKaraokeEdgeDisplay() {
         val edge = prefs.getInt(LyricsBrowserService.KARAOKE_EDGE_PREF_KEY, 0)
         findViewById<TextView>(R.id.tv_karaoke_edge).text = if (edge > 0) "+$edge" else "$edge"
+        btnKaraokeEdgeReset.isEnabled = edge != 0
+        btnKaraokeEdgeReset.alpha = if (edge != 0) 1f else 0.35f
     }
 
     private fun adjustAaOffset(deltaMs: Long) {
@@ -491,6 +517,8 @@ class MainActivity : AppCompatActivity() {
         val canReset = offsetMs != 0L
         btnPhoneSyncReset.isEnabled = canReset
         btnPhoneSyncReset.alpha = if (canReset) 1f else 0.35f
+        btnPhoneDelayReset.isEnabled = canReset
+        btnPhoneDelayReset.alpha = if (canReset) 1f else 0.35f
     }
 
     private fun dismissUndoSnackbar() {
@@ -572,7 +600,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             val lyricStart = ssb.length
-            ssb.append(line.text)
+            ssb.append(LyricDisplay.displayText(line.text))
             val lyricEnd = ssb.length
 
             if (isPastLine) {
@@ -642,7 +670,10 @@ class MainActivity : AppCompatActivity() {
                 )
             }
 
-            val translatedLine = state.translatedLines?.getOrNull(i)
+            val translatedLine = state.translatedLines?.getOrNull(i)?.takeIf { it.isNotBlank() }
+                ?: LyricDisplay.MUSIC_SYMBOL.takeIf {
+                    LyricDisplay.isSymbolText(line.text) && state.translatedLines?.isNotEmpty() == true
+                }
             if (!translatedLine.isNullOrBlank()) {
                 ssb.append("\n")
                 val tlStart = ssb.length

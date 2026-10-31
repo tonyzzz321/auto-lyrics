@@ -24,6 +24,19 @@ class LyricsCache(context: Context) {
         cacheDir.mkdirs()
     }
 
+    companion object {
+        /**
+         * Strip legacy RichSync anomaly-tag pills (fixN/oobN/dupN/missN/gapXs)
+         * from stored source labels (they only ever rode the RichSync label).
+         * They were diagnostic-only and are no longer produced, but entries
+         * are permanent, so old labels are cleaned at load.
+         */
+        internal fun sanitizeSource(source: String): String {
+            val marker = source.indexOf("RichSync")
+            return if (marker >= 0) source.substring(0, marker + "RichSync".length) else source
+        }
+    }
+
     data class CachedResult(
         val lines: List<CachedLine>,
         val status: String,
@@ -71,7 +84,7 @@ class LyricsCache(context: Context) {
                     }
                 )
             }
-            Triple(lines, status, cached.source)
+            Triple(lines, status, sanitizeSource(cached.source))
         } catch (_: Exception) {
             file.delete()
             null

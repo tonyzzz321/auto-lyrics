@@ -14,7 +14,9 @@ internal object AaKaraokeRows {
     /**
      * Pair of line indices to display for the active line index. The side
      * holding the active line shows it; the other side already previews the
-     * next line on its own track (active + 1). Indices beyond the song end
+     * next line on its own track (active + 1). Even line indices ride the
+     * bottom row, odd the top, so previewed lines never change rows when
+     * they start being sung. Indices beyond the song end
      * with -1 so the caller can render a placeholder instead of a seek target.
      */
     fun pairFor(activeIdx: Int, lineCount: Int): Pair<Int, Int> {
@@ -25,9 +27,14 @@ internal object AaKaraokeRows {
             // the preview side already shows the line about to start.
             return -1 to if (lineCount > 0) 0 else -1
         }
-        val top = if (activeIdx % 2 == 0) activeIdx else activeIdx + 1
-        val bottom = if (activeIdx % 2 == 1) activeIdx else activeIdx + 1
-        return top to if (bottom < lineCount) bottom else -1
+        // Even indices (the first line, third, ...) ride the BOTTOM row: the
+        // instrumental-intro preview below already shows the first line on
+        // the bottom, and a previewed line must sit on the row it will be
+        // sung from, or it visibly hops rows the moment it starts.
+        val top = if (activeIdx % 2 == 0) activeIdx + 1 else activeIdx
+        val bottom = if (activeIdx % 2 == 0) activeIdx else activeIdx + 1
+        return (if (top < lineCount) top else -1) to
+            (if (bottom < lineCount) bottom else -1)
     }
 
     /**
@@ -66,11 +73,19 @@ internal object AaKaraokeRows {
      * Row text and the hinted art icon scale together on every head unit, so
      * the row's display-unit capacity is linear in icon px, calibrated at 43
      * units for the 143 px reference viewport (DHU). One unit of margin
-     * guards against the wrap that over-padding causes.
+     * guards against the wrap that over-padding causes. The floor is pinned
+     * near the calibrated capacity because the icon-to-text scale is NOT
+     * constant across head units: a production unit shipping icon=56 renders
+     * rows at the same ~42-unit capacity as the DHU's icon=143 (verified by
+     * on-device probes), so a proportional collapse below the reference
+     * capacity only mis-justifies real cars.
      */
     fun columnFromIconSize(iconPx: Int, edge: Int, fallbackColumn: Int = 42): Int {
         val base = if (iconPx > 0) (iconPx * 43f / 143f).roundToInt() - 1 else fallbackColumn
-        return (base + edge).coerceIn(24, 64)
+        // Edge applies AFTER the floor: on low-hint hosts the raw base sits
+        // far below the floor, so pre-floor nudges were swallowed by the
+        // clamp and the phone-side knob did nothing.
+        return (base.coerceIn(40, 64) + edge).coerceIn(24, 64)
     }
 
     /**
@@ -84,6 +99,15 @@ internal object AaKaraokeRows {
      * total stays inside the row's wrap threshold.
      */
     fun markerEm(marker: String): Double = advanceEm(marker)
+
+    /**
+     * Host advance of U+266A in em units (rendered px per glyph / font px
+     * size). The glyph comes from the head unit's symbol fallback font, not
+     * Roboto, so this is a pixel-tuned constant: retune from a head-unit
+     * screenshot of a right-aligned music-symbol row (edge error px divided
+     * by 3 glyphs and the glyph px size), never from local font math.
+     */
+    private const val NOTE_EM = 0.56
 
     /**
      * Approximate rendered advance in ems using the head unit's Roboto
@@ -130,7 +154,11 @@ internal object AaKaraokeRows {
             'c', 'e', 'k', 's', 'x', 'z', 'v', 'y',
             '2', '3', '4', '5', '6', '7', '9' -> 0.47
             'a', 'b', 'd', 'g', 'h', 'n', 'o', 'p', 'q', 'u',
-            '0', '8', '\u266A', '\u25B4', '\u25B2' -> 0.56
+                        '0', '8', '▴', '▲' -> 0.56
+            // Note glyph: rendered from the host's symbol fallback font,
+            // not Roboto. Calibrate from a head-unit screenshot of a
+            // padded symbol row: edge_err_px / 3 glyphs / glyph_px.
+            '♪' -> NOTE_EM
             'J', 'T', 'L', '&', '\u00A1' -> 0.55
             'B', 'C', 'D', 'E', 'G', 'H', 'K', 'N', 'P', 'R', 'S', 'U', 'V', 'X', 'Y', 'Z' -> 0.63
             'A', 'O', 'Q' -> 0.67

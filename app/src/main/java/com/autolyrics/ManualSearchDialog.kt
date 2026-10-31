@@ -56,10 +56,12 @@ object ManualSearchDialog {
             return view
         }
 
-        fun textField(value: String): EditText {
+        fun textField(value: String, placeholder: String): EditText {
             return addRow(
                 EditText(activity).apply {
                     setText(value)
+                    hint = placeholder
+                    setHintTextColor(Color.parseColor("#556677"))
                     inputType = InputType.TYPE_CLASS_TEXT
                     maxLines = 1
                     textSize = 13f
@@ -71,8 +73,8 @@ object ManualSearchDialog {
             ?: MediaTracker.ManualSearchSession(track.title, track.artist)
                 .also { tracker.manualSearchSession = it }
 
-        val titleField = textField(session.title)
-        val artistField = textField(session.artist)
+        val titleField = textField(session.title, "Song title (required)")
+        val artistField = textField(session.artist, "Artist (optional)")
 
         val includeUnsyncedBox = CheckBox(activity).apply {
             text = "Include unsynced results"
@@ -104,18 +106,44 @@ object ManualSearchDialog {
         }
         addRow(actionRow)
 
+        val durationSec = (track.durationMs / 1000).toInt()
+        val statusMuted = Color.parseColor("#AAAACC")
+        val statusError = Color.parseColor("#FF7B72")
         val statusText = addRow(
             TextView(activity).apply {
-                text = if (session.hits.isNotEmpty()) {
-                    "${session.hits.size} results · track ${ManualSearch.formatDuration((track.durationMs / 1000).toInt())}"
-                } else {
-                    "Playing: ${ManualSearch.formatDuration((track.durationMs / 1000).toInt())}" +
-                        " · pick a result to override its lyrics"
-                }
-                setTextColor(Color.parseColor("#AAAACC"))
+                // A carried-over search re-renders right below via
+                // renderHits; this is the never-searched-yet line.
+                text = "Playing: ${ManualSearch.formatDuration(durationSec)}" +
+                    " · pick a result to override its lyrics"
+                setTextColor(statusMuted)
                 textSize = 12f
             }
         ) as TextView
+
+        // The status line carries only the outcome; every diagnostic lives
+        // behind this tap. It arms once a search has ended (or results are
+        // carried over); the never-searched line is not tappable.
+        statusText.isClickable = false
+        statusText.setOnClickListener {
+            val hidden = session.hits.size -
+                ManualSearch.applyUnsyncedFilter(session.hits, session.includeUnsynced).size
+            val tail = mutableListOf<String>()
+            if (hidden > 0) tail += "unsynced hidden: $hidden"
+            tail += "track ${ManualSearch.formatDuration(durationSec)}"
+            val detail = session.diagnostics + session.deaths + tail
+            val lines = TextView(activity).apply {
+                text = detail.joinToString("\n")
+                setTextColor(Color.parseColor("#CCCCDD"))
+                textSize = 12f
+                typeface = android.graphics.Typeface.MONOSPACE
+                setPadding(dp(20), dp(8), dp(20), 0)
+            }
+            AlertDialog.Builder(activity)
+                .setTitle("Search diagnostics")
+                .setView(ScrollView(activity).apply { addView(lines) })
+                .setPositiveButton("Close", null)
+                .show()
+        }
 
         val resultsGroup = RadioGroup(activity)
         val resultsScroll = ScrollView(activity).apply {
@@ -136,23 +164,15 @@ object ManualSearchDialog {
             .setNegativeButton("Cancel", null)
             .create()
 
-        fun renderHits(hits: List<ManualSearchHit>, diagnostics: List<String>) {
+        fun renderHits(hits: List<ManualSearchHit>, deaths: List<String>) {
             resultsGroup.removeAllViews()
             val visible = ManualSearch.applyUnsyncedFilter(hits, session.includeUnsynced)
-            if (hits.isEmpty()) {
-                val detail = diagnostics.joinToString(" · ")
-                statusText.text = if (detail.isBlank()) {
-                    "No usable results · try different terms"
-                } else {
-                    "No usable results · $detail"
-                }
-                return
-            }
-            val hidden = hits.size - visible.size
-            statusText.text =
-                "${visible.size} results" +
-                (if (hidden > 0) " ($hidden unsynced hidden)" else "") +
-                " · track ${ManualSearch.formatDuration((track.durationMs / 1000).toInt())}"
+            statusText.text = ManualSearch.statusLine(visible.size, durationSec, deaths)
+            statusText.isClickable = true
+            statusText.setTextColor(
+                if (visible.isEmpty() && deaths.isNotEmpty()) statusError else statusMuted
+            )
+            if (hits.isEmpty()) return
             visible.forEach { hit ->
                 val radio = RadioButton(activity).apply {
                     text = hit.label
@@ -172,11 +192,15 @@ object ManualSearchDialog {
             }
         }
 
-        if (session.hits.isNotEmpty()) renderHits(session.hits, session.diagnostics)
+        if (session.hits.isNotEmpty() || session.diagnostics.isNotEmpty() ||
+            session.deaths.isNotEmpty()
+        ) {
+            renderHits(session.hits, session.deaths)
+        }
 
         includeUnsyncedBox.setOnCheckedChangeListener { _, checked ->
             session.includeUnsynced = checked
-            if (session.hits.isNotEmpty()) renderHits(session.hits, session.diagnostics)
+            renderHits(session.hits, session.deaths)
         }
 
         resultsGroup.setOnCheckedChangeListener { group, checkedId ->
@@ -189,21 +213,30 @@ object ManualSearchDialog {
 
         searchButton.setOnClickListener {
             if (session.searching) return@setOnClickListener
+            val typedTitle = titleField.text.toString().trim()
+            if (typedTitle.isEmpty()) {
+                statusText.text = "Song title required"
+                statusText.setTextColor(statusError)
+                return@setOnClickListener
+            }
             resultsGroup.removeAllViews()
             searchButton.text = "Searching…"
+            statusText.setTextColor(statusMuted)
+            statusText.text = "Searching…"
             session.searching = true
-            session.title = titleField.text.toString()
+            session.title = typedTitle
             session.artist = artistField.text.toString()
             tracker.launchManualSearch(
                 title = session.title,
                 artist = session.artist
-            ) { hits, diagnostics ->
+            ) { hits, diagnostics, deaths ->
                 session.searching = false
                 session.hits = hits
                 session.diagnostics = diagnostics
+                session.deaths = deaths
                 if (dialog.isShowing) {
                     searchButton.text = "Search"
-                    renderHits(hits, diagnostics)
+                    renderHits(hits, deaths)
                 }
             }
         }
@@ -219,15 +252,18 @@ object ManualSearchDialog {
                 }
                 if (hit == null) {
                     statusText.text = "Pick a result first"
+                    statusText.setTextColor(statusError)
                     return@setOnClickListener
                 }
-                if (hit.fetch != null) statusText.text = "Fetching lyrics…"
                 useButton.isEnabled = false
                 tracker.applyManualLyrics(hit, expectedTrack = track) { applied, message ->
                     useButton.isEnabled = true
                     when {
                         applied -> dialog.dismiss()
-                        else -> statusText.text = message ?: "Could not apply result"
+                        else -> {
+                            statusText.text = message ?: "Could not apply result"
+                            statusText.setTextColor(statusError)
+                        }
                     }
                 }
             }

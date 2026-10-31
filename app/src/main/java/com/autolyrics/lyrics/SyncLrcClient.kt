@@ -26,9 +26,11 @@ object SyncLrcClient {
     private const val BASE_URL = "https://api.synclrc.dev/lyrics"
     private const val ITUNES_SEARCH_URL = "https://itunes.apple.com/search"
 
-    /** iTunes gives up to 6 songs; fetching every one would burn the manual
-     *  leg budget. Three exact-match fetches cover the realistic candidates. */
+    /** Auto needs one winner; three exact-match fetches cover the realistic
+     *  candidates without burning the 5 s leg. Manual lists rows for a human
+     *  to pick, so it takes the whole iTunes page. */
     private const val CATALOG_LOOKUP_LIMIT = 3
+    private const val CATALOG_LOOKUP_LIMIT_MANUAL = 6
 
     /** Wall-clock budget for the fallback chain inside the 10 s manual leg. */
     private const val CATALOG_BUDGET_SEC = 6L
@@ -76,7 +78,13 @@ object SyncLrcClient {
     )
 
     fun getKaraokeLyrics(track: TrackInfo, transport: MutableList<String>? = null): SyncLrcResult? {
-        if (track.title.isBlank() || track.artist.isBlank()) return null
+        if (track.title.isBlank()) return null
+
+        // The /lyrics endpoint requires BOTH track and artist — title-only
+        // is a 400 by contract ("Missing 'track' and 'artist' parameters").
+        // A blank-artist session goes ladder-only: iTunes resolves real
+        // names and every catalog fetch carries that candidate's artist.
+        if (track.artist.isBlank()) return itunesFallback(track, transport)
 
         val url = BASE_URL.toHttpUrl().newBuilder()
             .addQueryParameter("track", track.title)
@@ -122,50 +130,89 @@ object SyncLrcClient {
     fun manualSearch(
         title: String,
         artist: String,
-        diagnostics: MutableList<String>? = null
+        diagnostics: MutableList<String>? = null,
+        transport: MutableList<String>? = null
     ): List<ApiResponse> {
-        // Same engine as the auto iTunes fallback. The literal DB `/search`
-        // (kana/alias-blind) and the exact playing-name retry (auto already
-        // caches exactly that payload) were dropped, leaving the alias-aware
-        // catalog lookup as the single manual ladder.
+        // Two stages, mirroring auto: the exact /lyrics call with the
+        // (possibly edited) terms, then the alias-aware iTunes catalog
+        // ladder. itunesRows seeds its dedupe set with the requested names,
+        // so stage 1's row is never re-fetched and the catalog rows append
+        // after it. Blank artist drops stage 1 (the exact call needs both
+        // params — 400 by contract) and runs the ladder title-only: a
+        // machine isn't picking here, the rows are listed with their own
+        // artists, so other-artist hits are legitimate cover/live
+        // candidates. The literal DB `/search` (kana/alias-blind) stays
+        // retired.
         val trimmedTitle = title.trim()
         if (trimmedTitle.isBlank()) return emptyList()
-        val rows = if (artist.isBlank()) {
-            listOfNotNull(lyricsFor(trimmedTitle, ""))
-        } else {
-            itunesRows(trimmedTitle, artist)
+        val deaths = transport ?: mutableListOf()
+        val rows = mutableListOf<ApiResponse>()
+        // Stage 1's exact call is the leg's own request: its death belongs to
+        // transport (the Error signal). The ladder is Musixmatch-style body
+        // work: per-candidate deaths fold into the `k/n usable` diagnostic
+        // instead of spamming one death line per flaky upstream.
+        var probed = 0
+        if (artist.isNotBlank()) {
+            probed++
+            lyricsFor(trimmedTitle, artist.trim(), deaths)?.let { rows += it }
         }
-        diagnostics?.plusAssign(
-            if (rows.isEmpty()) "synclrc: no catalog match"
-            else "synclrc: catalog match x${rows.size}"
+        val (catalogRows, attempts) = itunesRows(
+            trimmedTitle, artist.trim(), mutableListOf(), CATALOG_LOOKUP_LIMIT_MANUAL
         )
+        rows += catalogRows
+        probed += attempts
+        diagnostics?.add(manualDiag(rows.size, probed, deaths))
         return rows
     }
+
+    /**
+     * Uniform leg-vocabulary diagnostic: `synclrc: N` when every fetch
+     * produced a row, `synclrc: k/n usable` when candidates were dropped
+     * (deaths or clean misses — same shape as the body-backed legs), the
+     * leg's own death cause when nothing was even attempted through a
+     * request-level failure, else a clean zero.
+     */
+    internal fun manualDiag(rowCount: Int, probed: Int, transport: List<String>): String =
+        when {
+            probed > 0 && rowCount < probed -> "synclrc: $rowCount/$probed usable"
+            transport.isNotEmpty() -> "synclrc: ${transport.first()}"
+            rowCount > 0 -> "synclrc: $rowCount"
+            else -> "synclrc: 0 (no catalog match)"
+        }
 
     /**
      * Alias-resolved catalog rows: iTunes candidates for "title artist"
      * (romanized/kana spellings survive where the DB's literal matching
      * cannot), each fetched as an exact-name `/lyrics` row. Shared by the
-     * manual catalog fallback and the auto iTunes fallback.
+     * manual ladder (whole iTunes page, listed for the human) and the auto
+     * iTunes fallback (three rows, one winner). Blank artist runs it
+     * title-only; every row still carries its own artist.
      */
     private fun itunesRows(
         title: String,
         artist: String,
-        transport: MutableList<String>? = null
-    ): List<ApiResponse> {
-        if (title.isBlank() || artist.isBlank()) return emptyList()
+        transport: MutableList<String>? = null,
+        limit: Int = CATALOG_LOOKUP_LIMIT
+    ): Pair<List<ApiResponse>, Int> {
+        if (title.isBlank()) return emptyList<ApiResponse>() to 0
         val deadline = System.nanoTime() + java.util.concurrent.TimeUnit
             .SECONDS.toNanos(CATALOG_BUDGET_SEC)
         val rows = mutableListOf<ApiResponse>()
         val seen = mutableSetOf(title.trim().lowercase() + "\u0000" + artist.trim().lowercase())
+        var attempted = 0
         for ((trackName, artistName) in itunesCandidates(title, artist, transport)) {
             if (System.nanoTime() > deadline) break
             val key = trackName.lowercase() + "\u0000" + artistName.lowercase()
             if (!seen.add(key)) continue
+            // Name pairs without an artist are unfetchable by contract —
+            // they are not probes, and the manual diagnostic must not count
+            // them against the usable fraction.
+            if (artistName.isBlank()) continue
+            attempted++
             lyricsFor(trackName, artistName, transport)?.let { rows += it }
-            if (rows.size >= CATALOG_LOOKUP_LIMIT) break
+            if (rows.size >= limit) break
         }
-        return rows
+        return rows to attempted
     }
 
     /** Exact-name `/lyrics` fetch; null unless the row carries real text. */
@@ -174,12 +221,12 @@ object SyncLrcClient {
         artist: String,
         transport: MutableList<String>? = null
     ): ApiResponse? {
-        if (title.isBlank()) return null
+        // The endpoint requires BOTH params (title-only is a contract 400),
+        // so a name pair without an artist is not fetchable — skip the call.
+        if (title.isBlank() || artist.isBlank()) return null
         val url = BASE_URL.toHttpUrl().newBuilder()
             .addQueryParameter("track", title.trim())
-            .apply {
-                if (artist.isNotBlank()) addQueryParameter("artist", artist.trim())
-            }
+            .addQueryParameter("artist", artist.trim())
             .build()
         val request = Request.Builder()
             .url(url)
@@ -314,7 +361,8 @@ object SyncLrcClient {
         // failed above, and the DB-backed /search matches those same literal
         // names, so it adds almost nothing for a single auto winner. Go
         // straight to the website-style iTunes-resolved catalog lookup.
-        val best = pickBestCandidate(itunesRows(track.title, track.artist, transport), track) ?: return null
+        val best = pickBestCandidate(itunesRows(track.title, track.artist, transport).first, track)
+            ?: return null
         debugLog("catalog fallback selected '${best.track.orEmpty()}'")
         return parseResponse(best, track)
     }

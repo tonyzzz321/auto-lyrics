@@ -266,20 +266,23 @@ object MusixmatchClient {
         title: String,
         artist: String,
         prefs: SharedPreferences? = null,
-        diagnostics: MutableList<String>? = null
+        diagnostics: MutableList<String>? = null,
+        transport: MutableList<String>? = null
     ): List<ManualCandidate> {
         val track = title.trim()
         val performer = artist.trim()
-        if (track.isBlank() && performer.isBlank()) return emptyList()
+        // Title is the mandatory term (the dialog enforces it).
+        if (track.isBlank()) return emptyList()
 
         val params = LinkedHashMap<String, String>()
-        if (track.isNotBlank()) params["q_track"] = track
+        params["q_track"] = track
         if (performer.isNotBlank()) params["q_artist"] = performer
         params["page_size"] = "10"
 
-        val response = authenticatedRequest("track.search", params, prefs)
+        val response = authenticatedRequest("track.search", params, prefs, transport)
         if (response == null) {
-            diagnostics?.plusAssign("musixmatch: request failed")
+            if (transport != null) transport.add("request failed")
+            else diagnostics?.plusAssign("musixmatch: request failed")
             return emptyList()
         }
 

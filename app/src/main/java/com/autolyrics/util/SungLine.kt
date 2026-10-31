@@ -19,20 +19,20 @@ import com.autolyrics.model.LyricLine
 internal object SungLine {
     /** Silence between a derived line end and the next start that reads as
      * music: longer than this and an INTERLUDE marker row owns the gap.
-     * Measured from the derived END, so it equals the "over 5 s after the
-     * last word" rule for token-timed lines and "over 10 s start-to-start"
-     * for line-timed ones (a token-less line is assumed to hold
-     * [LINE_HOLD_MS] first). */
+     * Measured from the derived END, so it equals "over 10 s from the last
+     * word start to the next start" for token-timed lines and "over 15 s
+     * start-to-start" for line-timed ones (a token-less line is assumed to
+     * hold [LINE_HOLD_MS] first). */
     const val GAP_MIN_MS = 5_000L
 
     /** A token-timed line ends this long after its last token START: no
      * provider ships word end times, so the start-plus-sustain model is
      * the derived end everywhere (board, markers, outro). */
-    const val LINE_SUSTAIN_MS = 2_000L
+    const val LINE_SUSTAIN_MS = 5_000L
 
     /** A token-less line is assumed to take this long: its derived end is
      * the line start plus this. */
-    const val LINE_HOLD_MS = 5_000L
+    const val LINE_HOLD_MS = 10_000L
 
     /** Shortest opening silence that earns an INTRO marker row. Equal to
      * the countdown cap, so a marker's countdown window never reaches

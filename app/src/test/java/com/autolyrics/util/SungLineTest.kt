@@ -22,15 +22,15 @@ class SungLineTest {
 
     private fun plainLine(ms: Long, text: String) = LyricLine(timeMs = ms, text = text)
 
-    // Token-timed song: L0 ends 13.5 (11.5 + 2 sustain), 46.5 s of silence
-    // to L1 (marker), L1 ends 64.0, 6 s gap to L2 (marker), L2 ends 72.0,
-    // 1 s tight to L3 (no marker), L3 ends 76.5 = outro start. The first
-    // line starts at 10 s, so an intro marker owns row 0.
+    // Token-timed song: L0 ends 16.5 (11.5 + 5 sustain), 43.5 s of silence
+    // to L1 (marker), L1 ends 67.0, 5.001 s gap to L2 (marker), L2 ends
+    // 77.001, ~1 s tight to L3 (no marker), L3 ends 84.5 = outro start.
+    // The first line starts at 10 s, so an intro marker owns row 0.
     private val song = listOf(
         line(10_000L, "first line", 10_000L, 11_500L),
         line(60_000L, "verse line", 60_000L, 62_000L),
-        line(70_000L, "after gap", 70_000L),
-        line(73_000L, "last line", 73_000L, 74_500L)
+        line(72_001L, "after gap", 72_001L),
+        line(78_000L, "last line", 78_000L, 79_500L)
     )
 
     private val songRows = listOf(
@@ -59,13 +59,13 @@ class SungLineTest {
         assertEquals(0, SungLine.currentVIndex(rows, song, 0L))          // intro
         assertEquals(0, SungLine.currentVIndex(rows, song, 9_999L))
         assertEquals(1, SungLine.currentVIndex(rows, song, 10_000L))     // first line
-        assertEquals(1, SungLine.currentVIndex(rows, song, 13_499L))     // still inside sustain
-        assertEquals(2, SungLine.currentVIndex(rows, song, 13_500L))     // interlude marker
+        assertEquals(1, SungLine.currentVIndex(rows, song, 16_499L))     // still inside sustain
+        assertEquals(2, SungLine.currentVIndex(rows, song, 16_500L))     // interlude marker
         assertEquals(2, SungLine.currentVIndex(rows, song, 59_999L))
         assertEquals(3, SungLine.currentVIndex(rows, song, 60_000L))     // line takes over
-        assertEquals(4, SungLine.currentVIndex(rows, song, 64_000L))     // second marker
-        assertEquals(5, SungLine.currentVIndex(rows, song, 70_000L))
-        assertEquals(6, SungLine.currentVIndex(rows, song, 73_000L))
+        assertEquals(4, SungLine.currentVIndex(rows, song, 67_000L))     // second marker
+        assertEquals(5, SungLine.currentVIndex(rows, song, 72_001L))
+        assertEquals(6, SungLine.currentVIndex(rows, song, 78_000L))
         assertEquals(6, SungLine.currentVIndex(rows, song, 240_000L))    // outro keeps last line
     }
 
@@ -80,26 +80,26 @@ class SungLineTest {
 
     @Test
     fun tightBreathsEarnNoMarker() {
-        // 1 s after the derived end (72.0 -> 73.0): sung handoff, no row.
+        // ~1 s after the derived end (77.001 -> 78.0): sung handoff, no row.
         val rows = SungLine.virtualRows(song, song.size)
         assertEquals(-1, rows.indexOfLast { it.isGap && it.realIndex == 2 })
     }
 
     @Test
     fun derivedEndDependsOnTimingKind() {
-        // Token-timed end = last token start + 2 s; exactly 5 s of silence
+        // Token-timed end = last token start + 5 s; exactly 5 s of silence
         // is NOT a marker (threshold is strictly greater).
         // (First line 60 s in: an intro marker owns row 0 in every case
         // here, so the song-marker queries filter it out.)
-        val token = listOf(line(60_000L, "a", 62_000L), line(69_000L, "b", 69_000L))
+        val token = listOf(line(60_000L, "a", 62_000L), line(72_000L, "b", 72_000L))
         assertTrue(SungLine.virtualRows(token, 2).none { it.isGap && it.realIndex >= 0 })
-        val marker = listOf(line(60_000L, "a", 62_000L), line(69_001L, "b", 69_001L))
+        val marker = listOf(line(60_000L, "a", 62_000L), line(72_001L, "b", 72_001L))
         assertEquals(1, SungLine.virtualRows(marker, 2).count { it.isGap && it.realIndex >= 0 })
-        // Line-timed: end = start + 5 s, so >10 s start-to-start earns a
-        // marker - the user's synced rule, same threshold.
-        val synced = listOf(plainLine(60_000L, "a"), plainLine(70_000L, "b"))
+        // Line-timed: end = start + 10 s, so >15 s start-to-start earns a
+        // marker - same threshold, longer assumed hold.
+        val synced = listOf(plainLine(60_000L, "a"), plainLine(75_000L, "b"))
         assertTrue(SungLine.virtualRows(synced, 2).none { it.isGap && it.realIndex >= 0 })
-        val syncedGap = listOf(plainLine(60_000L, "a"), plainLine(71_000L, "b"))
+        val syncedGap = listOf(plainLine(60_000L, "a"), plainLine(75_001L, "b"))
         assertEquals(1, SungLine.virtualRows(syncedGap, 2).count { it.isGap && it.realIndex >= 0 })
     }
 
@@ -107,20 +107,20 @@ class SungLineTest {
     fun outroIsTimingPointNotRow() {
         val rows = SungLine.virtualRows(song, song.size)
         assertTrue(!rows.last().isGap)
-        assertEquals(76_500L, SungLine.outroStartMs(song, song.size))
-        assertEquals(false, SungLine.pastLastLineEnd(song, song.size, 76_500L))
-        assertEquals(true, SungLine.pastLastLineEnd(song, song.size, 76_501L))
-        // Line-timed outro: last start + 5 s.
+        assertEquals(84_500L, SungLine.outroStartMs(song, song.size))
+        assertEquals(false, SungLine.pastLastLineEnd(song, song.size, 84_500L))
+        assertEquals(true, SungLine.pastLastLineEnd(song, song.size, 84_501L))
+        // Line-timed outro: last start + 10 s.
         val synced = listOf(plainLine(1_000L, "a"), plainLine(10_000L, "b"))
-        assertEquals(15_000L, SungLine.outroStartMs(synced, 2))
+        assertEquals(20_000L, SungLine.outroStartMs(synced, 2))
     }
 
     @Test
     fun countdownCountsToNextLineCappedAtFour() {
         assertEquals(4, SungLine.countdownSeconds(song, 0L, song.size))        // intro far out
-        assertEquals(4, SungLine.countdownSeconds(song, 66_000L, song.size))   // exactly 4 s out
-        assertEquals(3, SungLine.countdownSeconds(song, 67_000L, song.size))
-        assertEquals(1, SungLine.countdownSeconds(song, 69_900L, song.size))
+        assertEquals(4, SungLine.countdownSeconds(song, 68_001L, song.size))   // exactly 4 s out
+        assertEquals(2, SungLine.countdownSeconds(song, 69_800L, song.size))
+        assertEquals(1, SungLine.countdownSeconds(song, 71_900L, song.size))
         assertEquals(4, SungLine.countdownSeconds(song, 240_000L, song.size))  // outro: no target
     }
 
@@ -135,7 +135,7 @@ class SungLineTest {
         assertEquals(4, SungLine.markerCountdownSeconds(rows, 2, song, 9_000L))
         // The interlude itself ticks only inside its own final seconds.
         assertEquals(4, SungLine.markerCountdownSeconds(rows, 4, song, 66_000L))
-        assertEquals(1, SungLine.markerCountdownSeconds(rows, 4, song, 69_000L))
+        assertEquals(1, SungLine.markerCountdownSeconds(rows, 4, song, 71_900L))
     }
 
     @Test

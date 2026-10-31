@@ -179,8 +179,8 @@ class AaSequenceSimTest {
         // The parser strips every ♪ line (leading, mid-song and outro tags):
         // the sequence carries only the seven sung lines. Instrumentals are
         // derived from the timing silence, not from tags: line-timed holds
-        // end at start + 5 s, so only "third"(+5=26 -> 31: exactly 5 s is
-        // NOT a gap) stays tight while "fourth"(36 -> 60) and the first
+        // end at start + 10 s, so only "third"(+10=31 -> 31: zero silence
+        // is NOT a gap) stays tight while "fourth"(41 -> 60) and the first
         // chorus instance (65 -> 90) own interlude markers.
         assertEquals(listOf(0, 1, 2, 3, 4, 5, 6), s.rows.filter { !it.isGap }.map { it.realIndex })
         assertEquals(listOf(3, 4), s.rows.filter { it.isGap && it.realIndex >= 0 }.map { it.realIndex })
@@ -192,12 +192,12 @@ class AaSequenceSimTest {
     fun wordlessGapCountsToNextReal() {
         // Payload without any word timings: the ♪ tag at 0:10 is stripped;
         // the silence it used to mark is derived from "hello there" holding
-        // until 0:08, and the marker counts to the 0:15 lyric.
+        // until 0:13 (start + 10 s), and the marker counts to the 0:19 lyric.
         val lines = LrcParser.parse(
             """
             [00:03.00]hello there
             [00:10.00]♪
-            [00:15.00]back again
+            [00:19.00]back again
             [01:00.00]outro line
             """.trimIndent()
         )
@@ -207,14 +207,14 @@ class AaSequenceSimTest {
         val gap = rows.indexOfFirst { it.isGap }
         check(gap >= 0)
         assertEquals(0, rows[gap].realIndex)
-        assertEquals(gap, SungLine.currentVIndex(rows, lines, 10_000))
-        assertEquals(4, SungLine.countdownSeconds(lines, 10_000, count))
-        assertEquals(1, SungLine.countdownSeconds(lines, 14_200, count))
+        assertEquals(gap, SungLine.currentVIndex(rows, lines, 13_000))
+        assertEquals(4, SungLine.countdownSeconds(lines, 13_000, count))
+        assertEquals(1, SungLine.countdownSeconds(lines, 18_200, count))
         // Back on the real lyric the moment it starts ("back again" is
         // line 1 of the STRIPPED payload - the ♪ tag never made it in).
         assertEquals(
             rows.indexOfFirst { !it.isGap && it.realIndex == 1 },
-            SungLine.currentVIndex(rows, lines, 15_000)
+            SungLine.currentVIndex(rows, lines, 19_000)
         )
     }
 
@@ -229,7 +229,7 @@ class AaSequenceSimTest {
             [00:05.00]♪
             [00:06.00]right back
             [00:12.00]♪
-            [00:20.00]after the interlude
+            [00:22.00]after the interlude
             """.trimIndent()
         )
         val count = lines.size
@@ -241,10 +241,10 @@ class AaSequenceSimTest {
         // During the stripped flourish (0:05): "hello" still lit.
         assertEquals(hello, SungLine.currentVIndex(rows, lines, 5_000))
         assertEquals(hello, SungLine.currentVIndex(rows, lines, 5_900))
-        // The 0:12 tag is gone, but the 9 s silence after "right back"
-        // derives its marker: current from the derived end (0:11).
-        assertEquals(gap, SungLine.currentVIndex(rows, lines, 12_000))
-        assertEquals(gap, SungLine.currentVIndex(rows, lines, 19_000))
+        // The 0:12 tag is gone, but the 6 s silence after "right back"'s
+        // derived end (0:16) earns its marker.
+        assertEquals(gap, SungLine.currentVIndex(rows, lines, 16_000))
+        assertEquals(gap, SungLine.currentVIndex(rows, lines, 21_000))
     }
 
     @Test
@@ -268,8 +268,8 @@ class AaSequenceSimTest {
         """
         [00:12.00]<00:12.00>first <00:13.50>words
         [00:20.00]<00:20.00>second <00:22.80>line
-        [00:30.00]<00:30.00>after <00:31.00>gap
-        [00:33.00]<00:33.00>tail
+        [00:33.00]<00:33.00>after <00:34.00>gap
+        [00:40.00]<00:40.00>tail
         [01:00.00]♪
         """.trimIndent()
     )
@@ -277,7 +277,7 @@ class AaSequenceSimTest {
     @Test
     fun lrclibEnhancedSweep() {
         val s = sim("LRCLIB enhanced", lrclibEnhanced())
-        // word 2 ends 22.8+2=24.8, next 30.0 -> 5.2 s marker owned by line 1.
+        // word 2 ends 22.8+5=27.8, next 33.0 -> 5.2 s marker owned by line 1.
         assertTrue(s.rows.any { it.isGap && it.realIndex == 1 })
         // The outro tag never became a row; nothing trails the tail line.
         assertTrue(s.rows.none { it.isGap && it.realIndex >= 3 })
@@ -288,7 +288,7 @@ class AaSequenceSimTest {
         """
         [00:01.00]<00:01.00>君<00:01.40>を<00:01.80>忘<00:02.20>れ<00:02.60>な<00:03.00>い
         [00:04.00]<00:04.00>短い<00:04.80>词
-        [00:12.00]<00:12.00>戻<00:12.50>っ<00:13.00>て
+        [00:16.00]<00:16.00>戻<00:16.50>っ<00:17.00>て
         [01:00.00]<01:00.00>final
         [01:05.00]♪
         [01:07.00]♪
@@ -298,8 +298,8 @@ class AaSequenceSimTest {
     @Test
     fun syncLrcKaraokeSweep() {
         val s = sim("SyncLRC karaoke", syncLrcKaraoke())
-        // 04.8+2=6.8 end, next 12.0 -> marker owned by line 1; the 12 s
-        // line's 47 s silence into the final line owns a second marker.
+        // 04.8+5=9.8 end, next 16.0 -> 6.2 s marker owned by line 1; the
+        // 16 s line's silence into the final line owns a second marker.
         assertEquals(listOf(1, 2), s.rows.filter { it.isGap }.map { it.realIndex })
         // 1 s intro: no intro marker.
         assertFalse(s.rows.first().isGap)
@@ -380,7 +380,7 @@ class AaSequenceSimTest {
     @Test
     fun musixmatchSubtitleSynced() {
         val s = sim("Musixmatch subtitle", musixmatchSubtitle())
-        // 10+5=15 -> 20: a 5 s hold is NOT a gap (strictly greater); the
+        // 10+10=20 -> 20: zero silence is NOT a gap; the
         // ♪ tail is stripped entirely. (Row 0 is the 10 s intro marker.)
         assertTrue(s.rows.none { it.isGap && it.realIndex >= 0 })
         assertEquals(2, s.count)
@@ -402,7 +402,7 @@ class AaSequenceSimTest {
         // Intro marker owns row 0; the outro tags never become rows.
         assertEquals(2, s.rows.size)
         assertTrue(s.rows.first().isGap)
-        assertEquals(14_000L, SungLine.outroStartMs(s.lines, s.count))
+        assertEquals(17_000L, SungLine.outroStartMs(s.lines, s.count))
     }
 
     @Test
@@ -425,11 +425,11 @@ class AaSequenceSimTest {
             "back-to-back gaps",
             listOf(
                 line(60_000L, "A", 60_000L to 61_000L),
-                line(70_000L, "B", 70_000L to 71_000L),
-                line(80_000L, "C", 80_000L to 81_000L)
+                line(72_000L, "B", 72_000L to 73_000L),
+                line(84_000L, "C", 84_000L to 85_000L)
             )
         )
-        // A: end 62 -> B at 70 (8 s); B: end 72 -> C at 80 (8 s).
+        // A: end 65 -> B at 72 (7 s); B: end 77 -> C at 84 (7 s).
         // Plus the 60 s intro marker: [intro A g B g C].
         assertEquals(2, s.rows.count { it.isGap && it.realIndex >= 0 })
         assertTrue(s.rows.first().isGap)
@@ -439,20 +439,20 @@ class AaSequenceSimTest {
     @Test
     fun gapBoundaryExactlyMinimumDoesNotInsert() {
         val exact = listOf(
-            line(60_000L, "A", 60_000L to 61_000L), // end 62.0
-            line(67_000L, "B", 67_000L to 68_000L)  // +5.0 s exactly
+            line(60_000L, "A", 60_000L to 61_000L), // end 65.0 (last START + 5)
+            line(70_000L, "B", 70_000L to 71_000L)  // +5.0 s exactly
         )
         assertTrue(SungLine.virtualRows(exact, 2).none { it.isGap && it.realIndex == 0 })
         val over = listOf(
             line(60_000L, "A", 60_000L to 61_000L),
-            line(67_001L, "B", 67_001L to 68_000L)
+            line(70_001L, "B", 70_001L to 71_000L)
         )
         assertTrue(SungLine.virtualRows(over, 2).any { it.isGap && it.realIndex == 0 })
     }
 
     @Test
     fun wordlessLineHoldsFiveSecondsBeforeGap() {
-        // Empty word list = line-timed: end = start + 5 s, so 70.0 is
+        // Empty word list = line-timed: end = start + 10 s, so 70.0 is
         // exactly the threshold and owns no marker.
         val lines = listOf(
             LyricLine(60_000L, "no words", emptyList()),
@@ -566,7 +566,7 @@ class AaSequenceSimTest {
             """.trimIndent()
         )
         val s = sim("symbol spellings", lines)
-        // 60+2=62 end, next REAL 72 -> one derived marker; every mixed
+        // 60+5=65 end, next REAL 72 -> one derived marker; every mixed
         // spelling is gone from the payload entirely.
         assertEquals(listOf(0, 1), s.rows.filter { !it.isGap }.map { it.realIndex })
         assertEquals(

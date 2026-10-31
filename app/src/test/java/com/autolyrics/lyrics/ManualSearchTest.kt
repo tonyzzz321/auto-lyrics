@@ -337,4 +337,16 @@ class ManualSearchTest {
         assertEquals(1, ManualSearch.artistPenalty("Rainych", "Yorushika"))
     }
 
+    @Test
+    fun statusLineIsOutcomeOnly() {
+        assertEquals("12 results · track 4:31", ManualSearch.statusLine(12, 271, emptyList()))
+        assertEquals("0 results · track 4:31", ManualSearch.statusLine(0, 271, emptyList()))
+        assertEquals(
+            "Error · track 4:31",
+            ManualSearch.statusLine(0, 271, listOf("lrclib: HTTP 503"))
+        )
+        // Listed rows outrank dead legs; the diagnostics view carries causes.
+        assertEquals("3 results · track --:--", ManualSearch.statusLine(3, null, listOf("x")))
+    }
+
 }

@@ -246,7 +246,8 @@ object PetitLyricsClient {
     fun manualSearch(
         title: String,
         artist: String,
-        diagnostics: MutableList<String>? = null
+        diagnostics: MutableList<String>? = null,
+        transport: MutableList<String>? = null
     ): List<ManualSearchHit> {
         if (!isConfigured || title.isBlank()) return emptyList()
         val candidates = requestCandidates(
@@ -255,7 +256,8 @@ object PetitLyricsClient {
             album = "",
             lyricsType = 3,
             maxCount = SEARCH_MAX_COUNT,
-            logLabel = "manual"
+            logLabel = "manual",
+            transport = transport
         )
         val hits = manualHits(candidates, title, artist)
         diagnostics?.plusAssign("petitlyrics: ${hits.size}")

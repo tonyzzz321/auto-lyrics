@@ -34,9 +34,11 @@ data class ManualSearchHit(
     val status: LyricsStatus,
     val source: String,
     /**
-     * Providers whose list response omits the lyric body (Musixmatch) supply
-     * this instead; [com.autolyrics.media.MediaTracker.applyManualLyrics]
-     * runs it off-main when the row is picked.
+     * Internal transport between a provider client's list response and
+     * [com.autolyrics.media.MediaTracker]'s search-time eager-body phase:
+     * lazy providers hand out bodyless rows plus this lambda, the leg
+     * resolves it BEFORE the row is listed, and applied rows never carry
+     * it (fetch is null on everything the dialog can see).
      */
     val fetch: (() -> MusixmatchClient.ManualFetched?)? = null
 ) {
@@ -290,5 +292,21 @@ object ManualSearch {
     fun formatDuration(durationSec: Int?): String {
         if (durationSec == null || durationSec <= 0) return "--:--"
         return "%d:%02d".format(durationSec / 60, durationSec % 60)
+    }
+
+    /**
+     * Search status line, per the status contract: the outcome and nothing
+     * else. `Error` only when NOTHING listed AND at least one leg died
+     * transport-wise; clean all-empty is `0 results`. Every diagnostic —
+     * counts, catalog misses, bodies kept, per-leg causes — lives in the
+     * tap-to-open diagnostics view, never on this line.
+     */
+    internal fun statusLine(visible: Int, durationSec: Int?, deaths: List<String>): String {
+        val outcome = when {
+            visible > 0 -> "$visible results"
+            deaths.isNotEmpty() -> "Error"
+            else -> "0 results"
+        }
+        return "$outcome · track ${formatDuration(durationSec)}"
     }
 }

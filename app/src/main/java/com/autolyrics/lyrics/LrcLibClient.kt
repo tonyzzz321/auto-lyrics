@@ -13,9 +13,13 @@ import kotlin.math.min
 
 object LrcLibClient {
 
+    // Fail-fast like every other race participant: the 5 s leg budget is
+    // the real bound, so the client caps one request at 4 s to leave the
+    // leg room to settle instead of pretending a 15 s read could matter.
     private val client = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
+        .connectTimeout(2, TimeUnit.SECONDS)
+        .readTimeout(4, TimeUnit.SECONDS)
+        .callTimeout(4, TimeUnit.SECONDS)
         .build()
 
     private val gson = Gson()
@@ -528,12 +532,16 @@ object LrcLibClient {
         val diagnostics: List<String>
     )
 
-    fun manualSearch(trackName: String, artistName: String): ManualSearchOutcome {
-        val track = trackName.trim()
-        val artist = artistName.trim()
-        val query = track.ifBlank { artist }
-        val diagnostics = mutableListOf<String>()
-        if (query.isBlank()) return ManualSearchOutcome(emptyList(), diagnostics)
+    fun manualSearch(
+        trackName: String,
+        transport: MutableList<String>? = null
+    ): ManualSearchOutcome {
+        // Title is the mandatory term (the dialog enforces it); artist is
+        // an optional extra the free-text query never carried anyway. The
+        // manual diagnostic is the uniform leg line (`lrclib: N`); deaths go
+        // to transport and read there as the provider's cause.
+        val query = trackName.trim()
+        if (query.isBlank()) return ManualSearchOutcome(emptyList(), mutableListOf())
 
         // One call only. Structured params are exact-equality AND-filters and
         // free-text q AND-joins every word, so no title+artist spelling
@@ -541,11 +549,13 @@ object LrcLibClient {
         // and ManualSearch.rank scores the artist when ordering its wider
         // net of same-title covers and versions.
         val responses = try {
-            searchFreeText(query, diagnostics, "lrclib")
+            searchFreeText(query, null, "lrclib", transport)
         } catch (e: Exception) {
-            diagnostics += "${e.javaClass.simpleName} lrclib"
+            transport?.add("network: ${e.javaClass.simpleName}")
             emptyList()
         }
+        val diagnostics = mutableListOf<String>()
+        if (transport.isNullOrEmpty()) diagnostics += "lrclib: ${responses.size}"
         return ManualSearchOutcome(ManualSearch.mergeResponses(listOf(responses)), diagnostics)
     }
 
@@ -573,13 +583,14 @@ object LrcLibClient {
     private fun searchFreeText(
         query: String,
         diagnostics: MutableList<String>? = null,
-        label: String = "search"
+        label: String = "search",
+        transport: MutableList<String>? = null
     ): List<LrcLibResponse> {
         val url = "$BASE_URL/search".toHttpUrl().newBuilder()
             .addQueryParameter("q", query)
             .build()
             .toString()
-        return executeList(url, diagnostics, label)
+        return executeList(url, diagnostics, label, transport)
     }
 
     private fun executeSingle(
@@ -621,8 +632,11 @@ object LrcLibClient {
         return try {
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    diagnostics?.plusAssign("HTTP ${response.code} $label")
-                    transport?.add("HTTP ${response.code}")
+                    // With a transport sink attached the death belongs there
+                    // (the manual leg's Error signal); diagnostics stay the
+                    // clean per-provider lines.
+                    if (transport != null) transport.add("HTTP ${response.code}")
+                    else diagnostics?.plusAssign("HTTP ${response.code} $label")
                     return@use emptyList()
                 }
                 // Array class literal survives R8 without Signature/TypeToken keeps;
@@ -635,8 +649,8 @@ object LrcLibClient {
                 parsed
             }
         } catch (e: Exception) {
-            transport?.add("network: ${e.javaClass.simpleName}")
-            diagnostics?.plusAssign("${e.javaClass.simpleName} $label")
+            if (transport != null) transport.add("network: ${e.javaClass.simpleName}")
+            else diagnostics?.plusAssign("${e.javaClass.simpleName} $label")
             emptyList()
         }
     }

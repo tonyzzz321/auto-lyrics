@@ -233,4 +233,13 @@ class SyncLrcClientTest {
         )
     }
 
+    @Test
+    fun manualDiagUsesUniformLegVocabulary() {
+        assertEquals("synclrc: 4", SyncLrcClient.manualDiag(4, 4, emptyList()))
+        assertEquals("synclrc: 1/3 usable", SyncLrcClient.manualDiag(1, 3, emptyList()))
+        assertEquals("synclrc: 0/6 usable", SyncLrcClient.manualDiag(0, 6, emptyList()))
+        assertEquals("synclrc: HTTP 503", SyncLrcClient.manualDiag(0, 0, listOf("HTTP 503")))
+        assertEquals("synclrc: 0 (no catalog match)", SyncLrcClient.manualDiag(0, 0, emptyList()))
+    }
+
 }

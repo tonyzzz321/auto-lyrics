@@ -96,6 +96,7 @@ class MediaTracker private constructor(context: Context) {
         var artist: String,
         var hits: List<ManualSearchHit> = emptyList(),
         var diagnostics: List<String> = emptyList(),
+        var deaths: List<String> = emptyList(),
         var selected: ManualSearchHit? = null,
         var searching: Boolean = false,
         var includeUnsynced: Boolean = false
@@ -854,27 +855,79 @@ class MediaTracker private constructor(context: Context) {
     fun launchManualSearch(
         title: String,
         artist: String,
-        onResult: (hits: List<ManualSearchHit>, diagnostics: List<String>) -> Unit
+        onResult: (
+            hits: List<ManualSearchHit>,
+            diagnostics: List<String>,
+            deaths: List<String>
+        ) -> Unit
     ) {
         manualSearchJob?.cancel()
         manualSearchJob = scope.launch(Dispatchers.IO) {
             // Fault isolation: providers run in parallel, each under its own
             // timeout, so a stalled or failing provider can neither eat the
-            // others' budget nor void answers already fetched.
+            // others' budget nor void answers already fetched. Each leg also
+            // records TRANSPORT deaths (HTTP/timeout/exception at the wire);
+            // any death makes an empty result an Error rather than a clean
+            // zero, per the status contract.
+            val lrcLibTransport = mutableListOf<String>()
+            val syncLrcTransport = mutableListOf<String>()
+            val musixmatchTransport = mutableListOf<String>()
+            val petitLyricsTransport = mutableListOf<String>()
             val lrcLibDeferred = async(Dispatchers.IO) {
-                manualLeg("lrclib") { LrcLibClient.manualSearch(title, artist) }
+                manualLeg("lrclib") {
+                    runInterruptible(Dispatchers.IO) {
+                        LrcLibClient.manualSearch(title, lrcLibTransport)
+                    }
+                }
             }
             val syncLrcDeferred = async(Dispatchers.IO) {
                 manualLeg("synclrc") {
                     val legDiagnostics = mutableListOf<String>()
-                    SyncLrcClient.manualSearch(title, artist, legDiagnostics) to legDiagnostics
+                    runInterruptible(Dispatchers.IO) {
+                        SyncLrcClient.manualSearch(
+                            title, artist, legDiagnostics, syncLrcTransport
+                        ) to legDiagnostics
+                    }
                 }
             }
             val musixmatchDeferred = async(Dispatchers.IO) {
                 manualLeg("musixmatch") {
                     val legDiagnostics = mutableListOf<String>()
-                    MusixmatchClient.manualSearch(title, artist, prefs, legDiagnostics) to
-                        legDiagnostics
+                    val started = SystemClock.elapsedRealtime()
+                    val candidates = runInterruptible(Dispatchers.IO) {
+                        MusixmatchClient.manualSearch(
+                            title, artist, prefs, legDiagnostics, musixmatchTransport
+                        )
+                    }
+                    // Rows are only listed when clicking them lands on real
+                    // lyrics: pull bodies now (bounded, parallel, whatever
+                    // leg budget the list call left) and drop candidates the
+                    // provider refuses, returns junk for, or fails on.
+                    val budget = MANUAL_SEARCH_LEG_TIMEOUT_MS -
+                        (SystemClock.elapsedRealtime() - started) - 400
+                    val enriched = eagerBodies(candidates, budget) { candidate ->
+                        runInterruptible(Dispatchers.IO) {
+                            try {
+                                MusixmatchClient.fetchManualLyrics(candidate, prefs)
+                            } catch (e: Exception) {
+                                null
+                            }
+                        }
+                    }
+                    if (candidates.isNotEmpty()) {
+                        // Fold the body outcome into the leg's single count
+                        // line: `musixmatch: k/n usable` when candidates
+                        // were dropped, plain `musixmatch: n` otherwise.
+                        val probed = minOf(candidates.size, MANUAL_BODY_LIMIT)
+                        val merged = if (enriched.size < probed) {
+                            "musixmatch: ${enriched.size}/$probed usable"
+                        } else {
+                            "musixmatch: ${enriched.size}"
+                        }
+                        val at = legDiagnostics.indexOfFirst { it.startsWith("musixmatch: ") }
+                        if (at >= 0) legDiagnostics[at] = merged else legDiagnostics += merged
+                    }
+                    enriched to legDiagnostics
                 }
             }
             // Joins the manual race only when the provider identity is
@@ -882,8 +935,46 @@ class MediaTracker private constructor(context: Context) {
             val petitLyricsDeferred = async(Dispatchers.IO) {
                 manualLeg("petitlyrics") {
                     val legDiagnostics = mutableListOf<String>()
-                    PetitLyricsClient.manualSearch(title, artist, legDiagnostics) to
-                        legDiagnostics
+                    val started = SystemClock.elapsedRealtime()
+                    val hits = runInterruptible(Dispatchers.IO) {
+                        PetitLyricsClient.manualSearch(
+                            title, artist, legDiagnostics, petitLyricsTransport
+                        )
+                    }
+                    val budget = MANUAL_SEARCH_LEG_TIMEOUT_MS -
+                        (SystemClock.elapsedRealtime() - started) - 400
+                    val enriched = eagerBodies(hits, budget) { hit ->
+                        runInterruptible(Dispatchers.IO) {
+                            try {
+                                hit.fetch?.invoke()
+                            } catch (e: Exception) {
+                                null
+                            }
+                        }
+                    }
+                    if (hits.isNotEmpty()) {
+                        val probed = minOf(hits.size, MANUAL_BODY_LIMIT)
+                        val merged = if (enriched.size < probed) {
+                            "petitlyrics: ${enriched.size}/$probed usable"
+                        } else {
+                            "petitlyrics: ${enriched.size}"
+                        }
+                        val at = legDiagnostics.indexOfFirst { it.startsWith("petitlyrics: ") }
+                        if (at >= 0) legDiagnostics[at] = merged else legDiagnostics += merged
+                    }
+                    enriched.map { (hit, body) ->
+                        hit.copy(
+                            kind = if (body.lines.any { it.words.isNotEmpty() }) {
+                                ManualHitKind.KARAOKE
+                            } else {
+                                ManualHitKind.SYNCED
+                            },
+                            lines = body.lines,
+                            status = body.status,
+                            source = body.source,
+                            fetch = null
+                        )
+                    } to legDiagnostics
                 }
             }
             val (lrcLibOutcome, lrcLibLegFailure) = lrcLibDeferred.await()
@@ -892,35 +983,42 @@ class MediaTracker private constructor(context: Context) {
             val (petitLyricsResult, petitLyricsLegFailure) = petitLyricsDeferred.await()
             val lrcLibResponses = lrcLibOutcome?.responses.orEmpty()
             val syncLrcResponse = syncLrcResult?.first.orEmpty()
-            val musixmatchCandidates = musixmatchResult?.first.orEmpty()
+            val musixmatchBodies = musixmatchResult?.first.orEmpty()
             val diagnostics = mutableListOf<String>()
             lrcLibOutcome?.let { diagnostics += it.diagnostics }
             syncLrcResult?.let { diagnostics += it.second }
             musixmatchResult?.let { diagnostics += it.second }
             petitLyricsResult?.let { diagnostics += it.second }
-            diagnostics += lrcLibLegFailure
-            diagnostics += syncLrcLegFailure
-            diagnostics += musixmatchLegFailure
-            diagnostics += petitLyricsLegFailure
+            // Deaths are the Error signal and live in their own list; the
+            // status line never renders them, the diagnostics view does.
+            val deaths = mutableListOf<String>()
+            deaths += lrcLibLegFailure
+            deaths += syncLrcLegFailure
+            deaths += musixmatchLegFailure
+            deaths += petitLyricsLegFailure
+            lrcLibTransport.forEach { deaths += "lrclib: $it" }
+            syncLrcTransport.forEach { deaths += "synclrc: $it" }
+            musixmatchTransport.forEach { deaths += "musixmatch: $it" }
+            petitLyricsTransport.forEach { deaths += "petitlyrics: $it" }
             val hits = (
                 ManualSearch.toHits(lrcLibResponses) +
                     petitLyricsResult?.first.orEmpty() +
                     syncLrcResponse.flatMap { response -> listOfNotNull(ManualSearch.toSyncLrcHit(response)) } +
-                    musixmatchCandidates.map { candidate ->
+                    musixmatchBodies.map { (candidate, body) ->
                         ManualSearchHit(
                             provider = "Musixmatch",
                             title = candidate.title,
                             artist = candidate.artist,
                             durationSec = candidate.durationSec,
-                            kind = if (candidate.hasRichSync == true) {
+                            kind = if (body.lines.any { it.words.isNotEmpty() }) {
                                 ManualHitKind.KARAOKE
                             } else {
                                 ManualHitKind.SYNCED
                             },
-                            lines = emptyList(),
-                            status = LyricsStatus.FOUND,
-                            source = "Musixmatch · Line",
-                            fetch = { MusixmatchClient.fetchManualLyrics(candidate, prefs) }
+                            lines = body.lines,
+                            status = body.status,
+                            source = body.source,
+                            fetch = null
                         )
                     }
                 )
@@ -935,7 +1033,7 @@ class MediaTracker private constructor(context: Context) {
                 ourDurationSec.toInt(),
                 _state.value.track?.artist.orEmpty()
             )
-            withContext(Dispatchers.Main) { onResult(ranked, diagnostics.toList()) }
+            withContext(Dispatchers.Main) { onResult(ranked, diagnostics.toList(), deaths.toList()) }
         }
     }
 
@@ -958,40 +1056,18 @@ class MediaTracker private constructor(context: Context) {
             return
         }
 
-        val fetch = hit.fetch
-        if (fetch == null) {
-            onResult(applyHit(hit, track), null)
+        // Rows are body-backed at search time (launchManualSearch's eager
+        // body phase), so there is nothing left to fetch here: a row that
+        // still carries a fetch lambda or a junk-only payload is an
+        // invariant violation, refused the same way the search-time gate
+        // would have refused it.
+        if (hit.fetch != null || hit.lines.isEmpty() ||
+            !LyricsProviderResolver.hasDisplayableLines(hit.lines)
+        ) {
+            onResult(false, "Provider returned no usable lyrics")
             return
         }
-
-        manualSearchJob?.cancel()
-        manualSearchJob = scope.launch(Dispatchers.IO) {
-            val fetched = runInterruptible {
-                try {
-                    fetch()
-                } catch (e: Exception) {
-                    Log.w("ManualSearch", "manual fetch failed", e)
-                    null
-                }
-            }
-            withContext(Dispatchers.Main) {
-                if (fetched == null ||
-                    !LyricsProviderResolver.hasDisplayableLines(fetched.lines)) {
-                    onResult(false, "Provider returned no usable lyrics")
-                } else {
-                    val applied = applyHit(
-                        hit.copy(
-                            lines = fetched.lines,
-                            status = fetched.status,
-                            source = fetched.source,
-                            fetch = null
-                        ),
-                        track
-                    )
-                    onResult(applied, if (applied) null else "Track changed · search again")
-                }
-            }
-        }
+        onResult(applyHit(hit, track), null)
     }
 
     private fun applyHit(hit: ManualSearchHit, track: TrackInfo): Boolean {
@@ -1202,9 +1278,9 @@ class MediaTracker private constructor(context: Context) {
      */
     private suspend fun <T> manualLeg(
         label: String,
-        block: () -> T
+        block: suspend () -> T
     ): Pair<T?, List<String>> = try {
-        withTimeout(MANUAL_SEARCH_LEG_TIMEOUT_MS) { runInterruptible { block() } } to emptyList()
+        withTimeout(MANUAL_SEARCH_LEG_TIMEOUT_MS) { block() } to emptyList()
     } catch (e: TimeoutCancellationException) {
         null to listOf("$label: timed out after ${MANUAL_SEARCH_LEG_TIMEOUT_MS / 1000}s")
     } catch (e: CancellationException) {
@@ -1214,10 +1290,39 @@ class MediaTracker private constructor(context: Context) {
         null to listOf("$label: ${e.javaClass.simpleName}")
     }
 
+    /**
+     * Fetch lyric bodies for the first [MANUAL_BODY_LIMIT] [items] in
+     * parallel under one shared [budgetMs], keeping only the pairs whose
+     * body arrived and passes the junk gate. Manual search lists
+     * body-backed rows only, so every listed row is clickable.
+     */
+    private suspend fun <T> eagerBodies(
+        items: List<T>,
+        budgetMs: Long,
+        fetch: suspend (T) -> MusixmatchClient.ManualFetched?
+    ): List<Pair<T, MusixmatchClient.ManualFetched>> =
+        if (budgetMs <= 0 || items.isEmpty()) {
+            emptyList()
+        } else {
+            coroutineScope {
+                items.take(MANUAL_BODY_LIMIT).map { item ->
+                    async(Dispatchers.IO) {
+                        item to withTimeoutOrNull(budgetMs) { fetch(item) }
+                    }
+                }.awaitAll().mapNotNull { (item, body) ->
+                    body?.takeIf {
+                        LyricsProviderResolver.hasDisplayableLines(it.lines)
+                    }?.let { item to it }
+                }
+            }
+        }
+
     companion object {
+        /** Upper bound on eager body fetches per lazy-body leg. */
+        private const val MANUAL_BODY_LIMIT = 6
         private const val PROVIDER_BUDGET_MS = 5_000L
         /** Single backoff pause for the one-shot transient-miss retry. */
-        private const val AUTO_RETRY_BACKOFF_MS = 8_000L
+        private const val AUTO_RETRY_BACKOFF_MS = 3_000L
         /** Per-provider wall-clock cap for one manual search leg. */
         private const val MANUAL_SEARCH_LEG_TIMEOUT_MS = 10_000L
         private const val PROVIDER_RESOLVER_TAG = "ProviderResolver"

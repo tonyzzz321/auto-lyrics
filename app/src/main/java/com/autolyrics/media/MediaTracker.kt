@@ -18,10 +18,13 @@ import com.autolyrics.lyrics.LyricsCache
 import com.autolyrics.lyrics.LyricsProviderCandidate
 import com.autolyrics.lyrics.LyricsProviderResolver
 import com.autolyrics.lyrics.LyricsTranslator
+import com.autolyrics.lyrics.LlmTranslator
 import com.autolyrics.lyrics.MetadataCleaner
 import com.autolyrics.lyrics.MusixmatchClient
 import com.autolyrics.lyrics.PetitLyricsClient
 import com.autolyrics.lyrics.SyncLrcClient
+import com.autolyrics.lyrics.TranslationCache
+import com.autolyrics.lyrics.TranslationEngineUi
 import com.autolyrics.lyrics.TranslationLanguages
 import com.autolyrics.model.LyricLine
 import com.autolyrics.model.LyricsState
@@ -40,6 +43,7 @@ class MediaTracker private constructor(context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("auto_lyrics_prefs", Context.MODE_PRIVATE)
     private val lyricsCache = LyricsCache(context)
+    private val translationCache = TranslationCache(context)
 
     private val _state = MutableStateFlow(LyricsState())
     val state: StateFlow<LyricsState> = _state.asStateFlow()
@@ -61,7 +65,11 @@ class MediaTracker private constructor(context: Context) {
                 TRANSLATION_ENABLED_KEY -> {
                     handler.post { handleTranslationPreferenceChanged() }
                 }
-                TranslationLanguages.TARGET_LANGUAGE_PREF_KEY -> {
+                TranslationLanguages.TARGET_LANGUAGE_PREF_KEY,
+                LlmTranslator.PREF_ENGINE_KEY,
+                LlmTranslator.PREF_LLM_BASE_URL,
+                LlmTranslator.PREF_LLM_MODEL,
+                LlmTranslator.PREF_LLM_API_KEY -> {
                     handler.post { handleTranslationTargetChanged() }
                 }
                 AA_KARAOKE_ENABLED_KEY -> {
@@ -715,7 +723,7 @@ class MediaTracker private constructor(context: Context) {
     private fun handleKaraokePreferenceChanged() {
         val track = _state.value.track ?: return
         translationJob?.cancel()
-        LyricsTranslator.resetUiState()
+        resetTranslationUiState()
         _state.value = clearTranslationForLyricsVariantSwitch(_state.value)
         fetchLyrics(track)
     }
@@ -724,6 +732,7 @@ class MediaTracker private constructor(context: Context) {
         translationJob?.cancel()
 
         if (!prefs.getBoolean(TRANSLATION_ENABLED_KEY, true)) {
+            resetTranslationUiState()
             _state.value = _state.value.copy(
                 translatedLines = null,
                 detectedLanguage = null
@@ -745,7 +754,7 @@ class MediaTracker private constructor(context: Context) {
 
     private fun handleTranslationTargetChanged() {
         translationJob?.cancel()
-        LyricsTranslator.resetUiState()
+        resetTranslationUiState()
         _state.value = _state.value.copy(
             translatedLines = null,
             detectedLanguage = null
@@ -777,31 +786,71 @@ class MediaTracker private constructor(context: Context) {
     private fun translateIfNeeded(lines: List<LyricLine>, track: TrackInfo) {
         if (!prefs.getBoolean(TRANSLATION_ENABLED_KEY, true)) return
         val targetLanguage = selectedTargetLanguage()
+        val useLlm = LlmTranslator.isLlmEngine(prefs)
+        val llmConfig = if (useLlm) LlmTranslator.loadConfig(prefs) else null
 
         translationJob?.cancel()
         translationJob = scope.launch(Dispatchers.IO) {
             try {
-                val result = LyricsTranslator.translateLines(
-                    lines = lines,
-                    targetLanguage = targetLanguage
-                ) ?: return@launch
+                if (useLlm && llmConfig == null) {
+                    LlmTranslator.publishNotConfigured(targetLanguage)
+                    return@launch
+                }
+
+                val engineUi: TranslationEngineUi = if (useLlm) LlmTranslator else LyricsTranslator
+                val engine = if (useLlm) LlmTranslator.ENGINE_LLM else LlmTranslator.ENGINE_ON_DEVICE
+                val model = if (useLlm) llmConfig!!.model else LyricsTranslator.MODEL_ID
+
+                val cached = translationCache.get(track, lines, targetLanguage, engine, model)
+                if (cached != null) {
+                    val applied = withContext(Dispatchers.Main) {
+                        if (!translationStillValid(track, targetLanguage)) {
+                            false
+                        } else {
+                            _state.value = _state.value.copy(
+                                translatedLines = cached.lines,
+                                detectedLanguage = cached.detectedLanguage
+                            )
+                            true
+                        }
+                    }
+                    if (applied) {
+                        engineUi.publishReady(cached.detectedLanguage, targetLanguage)
+                    }
+                    return@launch
+                }
+
+                val result = if (useLlm) {
+                    LlmTranslator.translateLines(lines, targetLanguage, llmConfig!!, track)
+                } else {
+                    LyricsTranslator.translateLines(lines, targetLanguage)
+                } ?: return@launch
+
+                if (result.targetLanguage != targetLanguage) return@launch
+                translationCache.put(track, lines, result, engine, model)
 
                 withContext(Dispatchers.Main) {
-                    if (_state.value.track == track &&
-                        prefs.getBoolean(TRANSLATION_ENABLED_KEY, true) &&
-                        selectedTargetLanguage() == targetLanguage &&
-                        result.targetLanguage == targetLanguage
-                    ) {
-                        _state.value = _state.value.copy(
-                            translatedLines = result.translatedLines,
-                            detectedLanguage = result.detectedLanguage
-                        )
-                    }
+                    if (!translationStillValid(track, targetLanguage)) return@withContext
+                    _state.value = _state.value.copy(
+                        translatedLines = result.translatedLines,
+                        detectedLanguage = result.detectedLanguage
+                    )
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) { }
         }
+    }
+
+    private fun translationStillValid(track: TrackInfo, targetLanguage: String): Boolean {
+        return _state.value.track == track &&
+            prefs.getBoolean(TRANSLATION_ENABLED_KEY, true) &&
+            selectedTargetLanguage() == targetLanguage
+    }
+
+    private fun resetTranslationUiState() {
+        LyricsTranslator.resetUiState()
+        LlmTranslator.resetUiState()
     }
 
     companion object {

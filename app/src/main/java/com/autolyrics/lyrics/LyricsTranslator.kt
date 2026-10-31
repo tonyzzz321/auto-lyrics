@@ -36,7 +36,9 @@ data class TranslationResult(
     val targetLanguage: String
 )
 
-object LyricsTranslator {
+object LyricsTranslator : TranslationEngineUi {
+
+    const val MODEL_ID = "mlkit"
 
     enum class Phase {
         IDLE,
@@ -100,17 +102,25 @@ object LyricsTranslator {
     private val translationRetryRequired = ConcurrentHashMap<TranslationRequest, RetryState>()
 
     private val _uiState = MutableStateFlow(UiState())
-    val uiState: StateFlow<UiState> = _uiState.asStateFlow()
+    override val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
     fun init(context: Context) {
         appContext = context.applicationContext
     }
 
-    fun resetUiState() {
+    override fun resetUiState() {
         _uiState.value = UiState()
     }
 
-    fun prepareManualRetry() {
+    override fun publishReady(sourceLanguage: String, targetLanguage: String) {
+        _uiState.value = UiState(
+            phase = Phase.READY,
+            sourceLanguage = sourceLanguage,
+            targetLanguage = targetLanguage
+        )
+    }
+
+    override fun prepareManualRetry() {
         val current = _uiState.value
         val source = current.sourceLanguage ?: run {
             resetUiState()
@@ -509,7 +519,7 @@ object LyricsTranslator {
         )
     }
 
-    private suspend fun detectLanguage(text: String): String? {
+    internal suspend fun detectLanguage(text: String): String? {
         val identifier = LanguageIdentification.getClient()
         return try {
             suspendCancellableCoroutine { cont ->

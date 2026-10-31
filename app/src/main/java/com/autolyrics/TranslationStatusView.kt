@@ -20,7 +20,9 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import com.autolyrics.lyrics.LlmTranslator
 import com.autolyrics.lyrics.LyricsTranslator
+import com.autolyrics.lyrics.TranslationEngineUi
 import com.autolyrics.lyrics.TranslationLanguages
 import com.google.android.material.progressindicator.LinearProgressIndicator
 import kotlinx.coroutines.Dispatchers
@@ -89,21 +91,29 @@ class TranslationStatusView @JvmOverloads constructor(
     private var hostActivity: AppCompatActivity? = null
     private var progressModelLanguage: String? = null
 
+    private fun activeEngine(): TranslationEngineUi =
+        if (LlmTranslator.isLlmEngine(prefs)) LlmTranslator else LyricsTranslator
+
     private val elapsedRefreshRunnable = Runnable {
-        render(LyricsTranslator.uiState.value)
+        render(activeEngine().uiState.value)
     }
 
     private val preferenceListener =
         SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
             if (key == TRANSLATION_ENABLED_KEY ||
-                key == TranslationLanguages.TARGET_LANGUAGE_PREF_KEY
+                key == TranslationLanguages.TARGET_LANGUAGE_PREF_KEY ||
+                key == LlmTranslator.PREF_ENGINE_KEY
             ) {
                 if (key == TRANSLATION_ENABLED_KEY &&
                     !prefs.getBoolean(TRANSLATION_ENABLED_KEY, true)
                 ) {
                     LyricsTranslator.resetUiState()
+                    LlmTranslator.resetUiState()
                 }
-                post { render(LyricsTranslator.uiState.value) }
+                if (key == LlmTranslator.PREF_ENGINE_KEY) {
+                    restartObservation()
+                }
+                post { render(activeEngine().uiState.value) }
             }
         }
 
@@ -146,14 +156,17 @@ class TranslationStatusView @JvmOverloads constructor(
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         prefs.registerOnSharedPreferenceChangeListener(preferenceListener)
-        render(LyricsTranslator.uiState.value)
+        render(activeEngine().uiState.value)
+        restartObservation()
+    }
 
+    private fun restartObservation() {
         val activity = context as? AppCompatActivity ?: return
         hostActivity = activity
         observationJob?.cancel()
         observationJob = activity.lifecycleScope.launch {
             activity.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                LyricsTranslator.uiState.collect { state ->
+                activeEngine().uiState.collect { state ->
                     render(state)
                 }
             }
@@ -217,8 +230,17 @@ class TranslationStatusView @JvmOverloads constructor(
             LyricsTranslator.Phase.WAITING_FOR_SYSTEM ->
                 "Waiting to download ${modelLanguage ?: "translation"} model…\n" +
                     "System thermal limit · Elapsed ${formatElapsed(elapsedMs ?: 0L)}"
-            LyricsTranslator.Phase.TRANSLATING ->
-                "Translating ${sourceLanguage ?: "lyrics"} → $targetLanguage…"
+            LyricsTranslator.Phase.TRANSLATING -> {
+                val engineSuffix = if (LlmTranslator.isLlmEngine(prefs)) {
+                    prefs.getString(LlmTranslator.PREF_LLM_MODEL, "").orEmpty()
+                        .takeIf { it.isNotBlank() }
+                        ?.let { " · $it" }
+                        .orEmpty()
+                } else {
+                    ""
+                }
+                "Translating ${sourceLanguage ?: "lyrics"} → $targetLanguage$engineSuffix…"
+            }
             LyricsTranslator.Phase.READY ->
                 "${sourceLanguage ?: "Lyrics"} → $targetLanguage"
             LyricsTranslator.Phase.ALREADY_ENGLISH ->
@@ -295,7 +317,7 @@ class TranslationStatusView @JvmOverloads constructor(
         }
         progressModelLanguage = null
 
-        LyricsTranslator.prepareManualRetry()
+        activeEngine().prepareManualRetry()
         prefs.edit().putBoolean(TRANSLATION_ENABLED_KEY, false).apply()
         postDelayed({
             prefs.edit().putBoolean(TRANSLATION_ENABLED_KEY, true).apply()
@@ -311,7 +333,7 @@ class TranslationStatusView @JvmOverloads constructor(
             val info = queryDownloadManager(modelLanguage)
             val thermalStatus = currentThermalStatus()
             withContext(Dispatchers.Main) {
-                val current = LyricsTranslator.uiState.value
+                val current = activeEngine().uiState.value
                 if (!isAttachedToWindow ||
                     !isModelOperationPhase(current.phase) ||
                     current.modelLanguage != modelLanguage

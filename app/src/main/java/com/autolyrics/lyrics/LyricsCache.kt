@@ -8,7 +8,6 @@ import com.autolyrics.model.LyricsStatus
 import com.autolyrics.model.TrackInfo
 import com.google.gson.Gson
 import java.io.File
-import java.text.Normalizer
 import java.util.Locale
 
 class LyricsCache(context: Context) {
@@ -155,9 +154,9 @@ class LyricsCache(context: Context) {
         val keyParts = mutableListOf(
             "v13",
             variant.name.lowercase(Locale.ROOT),
-            normalizeKeyPart(track.title),
-            normalizeKeyPart(track.artist),
-            normalizeKeyPart(track.album),
+            normalizeCacheKeyPart(track.title),
+            normalizeCacheKeyPart(track.artist),
+            normalizeCacheKeyPart(track.album),
             durationSec
         )
         SpotifyTrackIdentity.trackId(track)?.let { spotifyTrackId ->
@@ -167,12 +166,6 @@ class LyricsCache(context: Context) {
 
         val hash = key.hashCode().toUInt().toString(16)
         return File(cacheDir, "$hash.json")
-    }
-
-    private fun normalizeKeyPart(value: String): String {
-        return Normalizer.normalize(value, Normalizer.Form.NFKC)
-            .lowercase(Locale.ROOT)
-            .trim()
     }
 
     companion object {

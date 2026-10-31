@@ -44,6 +44,7 @@ class AutoLyricsApp : Application() {
                     // status below it, yielding Toggle -> Language -> Status.
                     TranslationStatusView.install(activity)
                     TranslationTargetView.install(activity)
+                    TranslationEngineView.install(activity)
                     TranslationMetadataBinder.install(activity)
                 }
             }

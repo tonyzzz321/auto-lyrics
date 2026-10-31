@@ -21,6 +21,8 @@ Auto Lyrics is an Android app that follows the active media session and displays
 - **Demand-aware provider work** — active media sessions are monitored continuously, but lyric providers are queried only while the phone UI is in use or Android Auto projection is connected.
 - **Phone companion UI** — lyrics remain available on the phone, including the performance/karaoke view.
 - **Local cache** — normal and Karaoke selections use separate cache variants; word timestamps and explicit word end times are preserved.
+- **Dual translation engines** — on-device ML Kit, or any OpenAI-compatible remote LLM endpoint (model dropdown fed by the endpoint's `/models` route; API key optional).
+- **Persistent translation cache** — translated lines are stored per track, target language, engine/model, and lyric-text hash, so replays skip detection and network entirely.
 
 ## Architecture
 
@@ -43,8 +45,8 @@ MediaTracker (singleton / StateFlow)
     ├── PetitLyrics ───────────┤ when configured
     ├── SyncLRC ───────────────┤ Karaoke mode only
     ├── LyricsProviderResolver ◀┘
-    ├── LyricsCache
-    └── translation / album-art helpers
+    ├── LyricsCache / TranslationCache
+    └── LyricsTranslator · LlmTranslator / album-art helpers
             │
             ├──────────────────────────┐
             ▼                          ▼

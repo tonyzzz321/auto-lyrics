@@ -44,7 +44,9 @@ MediaListenerService (NotificationListenerService)
                                   ├─ MetadataCleaner
                                   ├─ LrcParser
                                   ├─ KaraokeTiming
-                                  ├─ LyricsTranslator
+                                  ├─ LyricsTranslator ───┐ engine routing via
+                                  ├─ LlmTranslator ──────┘ translation_engine pref
+                                  ├─ TranslationCache
                                   └─ AlbumColorExtractor
                                           │
                      ┌────────────────────┴────────────────────┐
@@ -329,6 +331,19 @@ process environment
 
 If a required value is blank, PetitLyrics is skipped. These values are compiled into Android `BuildConfig`; keeping them out of Git does not make them secret in a distributed APK.
 
+## Translation engines
+
+`MediaTracker.translateIfNeeded()` routes by the `translation_engine` pref (`on_device` default, `llm`). Both engines implement `TranslationEngineUi` — a shared `UiState` `StateFlow` plus a manual-retry gate — and `TranslationStatusView` observes whichever engine is active. `TranslationEngineView` is the settings row that picks the engine and configures the remote endpoint.
+
+**On-device (`LyricsTranslator`)** — ML Kit with on-demand language-pack downloads; same-source-and-target short-circuits, and `und` detection fails closed behind the Retry gate.
+
+**Remote LLM (`LlmTranslator`)** — any OpenAI-compatible `/chat/completions` endpoint:
+
+- Config prefs: `llm_base_url`, `llm_model`, `llm_api_key` (key optional; many self-hosted servers need none). A bare host input normalizes to `https://host/v1` via `normalizeBaseUrl`; an explicit scheme or path passes through untouched. Cleartext is allowed app-wide (`usesCleartextTraffic`) because the LLM server never runs on the phone.
+- Requests send the lyric lines as a JSON array in ≤6000-char chunks at temperature 0.2. A lyrics-specific system prompt requires exactly N strings, line discipline (non-lexical/ad-lib lines pass through), chorus consistency, no sanitizing, and concise phrasing.
+- Responses parse leniently (code-fence strip, numbered-line fallback) and must match the input line count; up to 2 in-conversation repair retries, then a hard failure that latches manual Retry — there is no silent fallback to on-device translation.
+- Model IDs come from `GET {base}/models`, fetched when the Configure dialog opens, when the Base URL field loses focus after a change, and via the ↻ reload row; endpoints without a `/models` route fall back to manual entry.
+
 ## Cache policy
 
 Cache identity includes:
@@ -356,6 +371,8 @@ Refresh policy:
 The last rule is important for SyncLRC/LDDC-style aggregation: a temporary upstream miss should not pin LINE_SYNC in the Karaoke cache for a week.
 
 Provider clients still collapse some `NOT_FOUND` and transient-error outcomes to `null`; this can cause legitimate one-provider songs to refresh more often, but it avoids long-lived stale fallbacks.
+
+**Translation cache** (`filesDir/translation_cache`) persists translated lines per engine. Its key covers track identity (title/artist/album/duration plus Spotify track ID when present), target language, engine, model, and a SHA-256 of the concatenated source lyric text; entries never expire. A lyric refresh, a target-language change, or an engine/model switch each change the key, so a stale translation is never applied and a cache hit skips detection and network work entirely.
 
 ## Karaoke active-token timing
 
@@ -465,7 +482,11 @@ Automated coverage should retain:
 - rejection of SyncLRC synced/plain-only responses,
 - fine English fragment → source-word display grouping,
 - Japanese character timing → word-like display grouping without mutating raw timing,
-- synchronized candidate preference over plain lyrics.
+- synchronized candidate preference over plain lyrics,
+- LLM reply parsing: JSON array, code-fence strip, numbered-line fallback, and line-count rejection,
+- LLM chunk splitting at the char budget with blank/note-only lines skipped,
+- remote base-URL normalization (`host` → `https://host/v1`, explicit paths preserved),
+- translation cache round-trip and invalidation on lyric/target/engine/model change.
 
 Manual Phone / DHU checks:
 
@@ -481,6 +502,7 @@ Manual Phone / DHU checks:
 10. Karaoke source text retains correct spacing for English, Japanese, and mixed scripts.
 11. No future timing token is highlighted solely to hide browse latency.
 12. Karaoke ON can select an equivalent word-timed provider while Karaoke OFF independently retains the standard winner.
+13. Switching translation engine between on-device and remote re-translates the current track without restarting the app, and replaying a cached track shows the translated lines immediately.
 
 ## Key files
 
@@ -497,6 +519,9 @@ Manual Phone / DHU checks:
 | `app/src/main/java/com/autolyrics/lyrics/LrcParser.kt` | Standard and Enhanced-LRC parsing. |
 | `app/src/main/java/com/autolyrics/lyrics/LyricsProviderResolver.kt` | Metadata/quality/source scoring and mode-aware selection. |
 | `app/src/main/java/com/autolyrics/lyrics/LyricsCache.kt` | STANDARD/KARAOKE persistent cache. |
+| `app/src/main/java/com/autolyrics/lyrics/TranslationCache.kt` | Persistent translation cache keyed by track+target+engine+model+source-text hash. |
+| `app/src/main/java/com/autolyrics/lyrics/LyricsTranslator.kt` | On-device ML Kit engine: language detection, pack downloads, per-line translation. |
+| `app/src/main/java/com/autolyrics/lyrics/LlmTranslator.kt` | Remote OpenAI-compatible engine: chunking, lenient parsing, repair retries, `/models` listing. |
 | `app/src/main/java/com/autolyrics/lyrics/KaraokeTiming.kt` | Shared raw-token active-index selection. |
 | `app/src/main/java/com/autolyrics/util/LyricWordLayout.kt` | Exact source layout and timing-token → display-range grouping. |
 | `app/src/main/java/com/autolyrics/auto/LyricsBrowserService.kt` | Android Auto MediaBrowser, MediaSession, Sync controls, Karaoke rendering. |

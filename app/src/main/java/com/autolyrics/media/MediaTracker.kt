@@ -71,12 +71,14 @@ class MediaTracker private constructor(context: Context) {
         var hits: List<ManualSearchHit> = emptyList(),
         var diagnostics: List<String> = emptyList(),
         var selected: ManualSearchHit? = null,
-        var searching: Boolean = false
+        var searching: Boolean = false,
+        var includeUnsynced: Boolean = false
     )
 
     var manualSearchSession: ManualSearchSession? = null
     private var pendingTrack: TrackInfo? = null
     private var pendingArt: Bitmap? = null
+    private var endRewindHeldMs = 0L
     private var lyricsOffsetMs: Long = 0L
 
     private val preferenceChangeListener =
@@ -164,6 +166,9 @@ class MediaTracker private constructor(context: Context) {
         translationJob?.cancel()
         manualSearchJob?.cancel()
         manualSearchSession = null
+        // New track: the held end-of-song position is stale baseline now.
+        endRewindHeldMs = 0L
+        lastPositionMs = 0L
         _state.value = _state.value.copy(
             track = track,
             lines = emptyList(),
@@ -382,10 +387,22 @@ class MediaTracker private constructor(context: Context) {
         if (pbState == null) return
 
         val isPlaying = pbState.state == PlaybackState.STATE_PLAYING
-        lastPositionMs = pbState.position
-        lastPositionUpdateTime = pbState.lastPositionUpdateTime
-        if (lastPositionUpdateTime == 0L) {
-            lastPositionUpdateTime = SystemClock.elapsedRealtime()
+        // End-of-song rewind artifact: players briefly report position 0 in
+        // a non-playing state while the next track's callbacks are still in
+        // flight. Accepting it rewinds the AA boards to the intro mid-
+        // outro. Hold the song-end position instead: real seeks land in a
+        // playing state (accepted), and a genuine track change resets the
+        // baseline below.
+        val endRewind = !isPlaying && pbState.position < 2_000L && lastPositionMs > 10_000L
+        if (endRewind) {
+            if (endRewindHeldMs == 0L) endRewindHeldMs = SystemClock.elapsedRealtime()
+        } else {
+            endRewindHeldMs = 0L
+            lastPositionMs = pbState.position
+            lastPositionUpdateTime = pbState.lastPositionUpdateTime
+            if (lastPositionUpdateTime == 0L) {
+                lastPositionUpdateTime = SystemClock.elapsedRealtime()
+            }
         }
         playbackSpeed = if (pbState.playbackSpeed > 0) pbState.playbackSpeed else 1.0f
 
@@ -520,12 +537,8 @@ class MediaTracker private constructor(context: Context) {
         val musixmatchDeferred = async {
             fetchProviderWithBudget("Musixmatch") { fetchFromMusixmatch(track) }
         }
-        val syncLrcDeferred = if (preferWordSync) {
-            async {
-                fetchProviderWithBudget("SyncLRC") { fetchFromSyncLrc(track) }
-            }
-        } else {
-            null
+        val syncLrcDeferred = async {
+            fetchProviderWithBudget("SyncLRC") { fetchFromSyncLrc(track) }
         }
 
         val lrcAttempt = lrcLibDeferred.await()
@@ -556,6 +569,14 @@ class MediaTracker private constructor(context: Context) {
                         score.candidate.syncKind
                     )
                 )
+            }
+        }
+
+        if (BuildConfig.DEBUG) {
+            candidates.forEach { c ->
+                if (!LyricsProviderResolver.hasDisplayableContent(c)) {
+                    Log.d(PROVIDER_RESOLVER_TAG, "${c.provider} rejected: no displayable content")
+                }
             }
         }
 
@@ -641,7 +662,8 @@ class MediaTracker private constructor(context: Context) {
             durationSec = result.matchedDurationSec,
             lines = result.lines,
             status = LyricsStatus.FOUND,
-            source = "PetitLyrics · Synced",
+            source = if (syncKind == LyricsProviderCandidate.SyncKind.WORD_SYNC)
+                "PetitLyrics · Karaoke" else "PetitLyrics · Synced",
             syncKind = syncKind,
             artistQueryCorroborated = result.artistQueryCorroborated
         )
@@ -685,8 +707,16 @@ class MediaTracker private constructor(context: Context) {
         } ?: return null
 
         val hasRealText = result.lines.any { it.text != "♪" && it.text.isNotBlank() }
-        val hasWordTiming = result.lines.any { it.words.isNotEmpty() }
-        if (!hasRealText || !hasWordTiming) return null
+        if (!hasRealText) return null
+
+        val (status, source) = when (result.syncKind) {
+            LyricsProviderCandidate.SyncKind.WORD_SYNC ->
+                LyricsStatus.FOUND to "SyncLRC · Karaoke"
+            LyricsProviderCandidate.SyncKind.LINE_SYNC ->
+                LyricsStatus.FOUND to "SyncLRC · Synced"
+            LyricsProviderCandidate.SyncKind.PLAIN ->
+                LyricsStatus.PLAIN_ONLY to "SyncLRC · Not synced"
+        }
 
         return LyricsProviderCandidate(
             provider = "SyncLRC",
@@ -695,9 +725,9 @@ class MediaTracker private constructor(context: Context) {
             album = result.matchedAlbum,
             durationSec = result.matchedDurationSec,
             lines = result.lines,
-            status = LyricsStatus.FOUND,
-            source = "SyncLRC · Karaoke",
-            syncKind = LyricsProviderCandidate.SyncKind.WORD_SYNC,
+            status = status,
+            source = source,
+            syncKind = result.syncKind,
             artistQueryCorroborated = result.artistQueryCorroborated
         )
     }
@@ -793,9 +823,19 @@ class MediaTracker private constructor(context: Context) {
                         legDiagnostics
                 }
             }
+            // Joins the manual race only when the provider identity is
+            // configured; silent (not a failure) when it is not.
+            val petitLyricsDeferred = async(Dispatchers.IO) {
+                manualLeg("petitlyrics") {
+                    val legDiagnostics = mutableListOf<String>()
+                    PetitLyricsClient.manualSearch(title, artist, legDiagnostics) to
+                        legDiagnostics
+                }
+            }
             val (lrcLibOutcome, lrcLibLegFailure) = lrcLibDeferred.await()
             val (syncLrcResult, syncLrcLegFailure) = syncLrcDeferred.await()
             val (musixmatchResult, musixmatchLegFailure) = musixmatchDeferred.await()
+            val (petitLyricsResult, petitLyricsLegFailure) = petitLyricsDeferred.await()
             val lrcLibResponses = lrcLibOutcome?.responses.orEmpty()
             val syncLrcResponse = syncLrcResult?.first.orEmpty()
             val musixmatchCandidates = musixmatchResult?.first.orEmpty()
@@ -803,11 +843,14 @@ class MediaTracker private constructor(context: Context) {
             lrcLibOutcome?.let { diagnostics += it.diagnostics }
             syncLrcResult?.let { diagnostics += it.second }
             musixmatchResult?.let { diagnostics += it.second }
+            petitLyricsResult?.let { diagnostics += it.second }
             diagnostics += lrcLibLegFailure
             diagnostics += syncLrcLegFailure
             diagnostics += musixmatchLegFailure
+            diagnostics += petitLyricsLegFailure
             val hits = (
                 ManualSearch.toHits(lrcLibResponses) +
+                    petitLyricsResult?.first.orEmpty() +
                     syncLrcResponse.flatMap { response -> listOfNotNull(ManualSearch.toSyncLrcHit(response)) } +
                     musixmatchCandidates.map { candidate ->
                         ManualSearchHit(
@@ -828,7 +871,7 @@ class MediaTracker private constructor(context: Context) {
                     }
                 )
             val ourDurationSec = (_state.value.track?.durationMs ?: 0L) / 1000
-            val relevant = hits.filter { ManualSearch.titleIsRelevant(it.title, title) }
+            val relevant = hits.filter { ManualSearch.passesRelevance(it, title) }
             val dropped = hits.size - relevant.size
             if (dropped > 0) {
                 diagnostics += "title filter: -$dropped"
@@ -878,7 +921,8 @@ class MediaTracker private constructor(context: Context) {
                 }
             }
             withContext(Dispatchers.Main) {
-                if (fetched == null || fetched.lines.isEmpty()) {
+                if (fetched == null ||
+                    !LyricsProviderResolver.hasDisplayableLines(fetched.lines)) {
                     onResult(false, "Provider returned no usable lyrics")
                 } else {
                     val applied = applyHit(

@@ -17,6 +17,24 @@ class SyncLrcClientTest {
     )
 
     @Test
+    fun itunesResponseParsesTitleArtistPairs() {
+        val json = """
+            {"resultCount":3,"results":[
+              {"trackName":"Connect","artistName":"ClariS"},
+              {"trackName":"  ","artistName":"Nobody"},
+              {"trackName":"Connect","artistName":"ClariS"},
+              {"trackName":"コネクト","artistName":"WANIMANA"}
+            ]}
+        """.trimIndent()
+        assertEquals(
+            listOf("Connect" to "ClariS", "コネクト" to "WANIMANA"),
+            SyncLrcClient.parseItunesResponse(json)
+        )
+        assertTrue(SyncLrcClient.parseItunesResponse("not json").isEmpty())
+        assertTrue(SyncLrcClient.parseItunesResponse("{}").isEmpty())
+    }
+
+    @Test
     fun apiResponseFieldsHaveStableSerializedNames() {
         val expected = mapOf(
             "karaoke" to "karaoke",
@@ -85,7 +103,7 @@ class SyncLrcClientTest {
     }
 
     @Test
-    fun rejectsCurrentResponseWithoutKaraokePayload() {
+    fun acceptsSyncedOnlyResponseAsLineSync() {
         val json = """
             {
               "track": "Provider",
@@ -95,11 +113,29 @@ class SyncLrcClientTest {
             }
         """.trimIndent()
 
-        assertNull(SyncLrcClient.parseApiResponse(json, track))
+        val result = SyncLrcClient.parseApiResponse(json, track)
+        assertEquals("Provider", result?.lines?.single()?.text)
+        assertEquals(LyricsProviderCandidate.SyncKind.LINE_SYNC, result?.syncKind)
     }
 
     @Test
-    fun rejectsLegacySyncedFallbackFromKaraokeRequest() {
+    fun karaokePayloadWithoutTokensFallsBackToSyncedTier() {
+        val json = """
+            {
+              "track": "Provider",
+              "artist": "Example Artist",
+              "karaoke": "[00:01.00]Provider",
+              "synced": "[00:02.00]Provider synced"
+            }
+        """.trimIndent()
+
+        val result = SyncLrcClient.parseApiResponse(json, track)
+        assertEquals("Provider synced", result?.lines?.single()?.text)
+        assertEquals(LyricsProviderCandidate.SyncKind.LINE_SYNC, result?.syncKind)
+    }
+
+    @Test
+    fun acceptsLegacyTypeSyncedLyricsField() {
         val json = """
             {
               "track": "Provider",
@@ -109,11 +145,12 @@ class SyncLrcClientTest {
             }
         """.trimIndent()
 
-        assertNull(SyncLrcClient.parseApiResponse(json, track))
+        val result = SyncLrcClient.parseApiResponse(json, track)
+        assertEquals(LyricsProviderCandidate.SyncKind.LINE_SYNC, result?.syncKind)
     }
 
     @Test
-    fun rejectsLegacyPlainFallbackFromKaraokeRequest() {
+    fun acceptsLegacyTypePlainLyricsField() {
         val json = """
             {
               "track": "Provider",
@@ -123,7 +160,9 @@ class SyncLrcClientTest {
             }
         """.trimIndent()
 
-        assertNull(SyncLrcClient.parseApiResponse(json, track))
+        val result = SyncLrcClient.parseApiResponse(json, track)
+        assertEquals("Provider", result?.lines?.single()?.text)
+        assertEquals(LyricsProviderCandidate.SyncKind.PLAIN, result?.syncKind)
     }
 
     @Test
@@ -157,52 +196,7 @@ class SyncLrcClientTest {
         assertEquals(6, line?.words?.size)
         assertTrue(line?.words?.all { it.text.length == 1 } == true)
     }
-    @Test
-    fun parsesSearchResultsIntoApiResponses() {
-        val json = """
-            {
-              "results": [
-                {
-                  "id": "abc",
-                  "track": "Song",
-                  "artist": "Singer",
-                  "album": "LP",
-                  "duration": 200,
-                  "instrumental": false,
-                  "lyrics": {
-                    "plain": "plain text",
-                    "synced": "[00:01.00]Song",
-                    "karaoke": "[00:01.00]<00:01.00>Song"
-                  }
-                },
-                {
-                  "id": "def",
-                  "track": "Empty",
-                  "artist": "Nobody",
-                  "lyrics": {"plain": "  "}
-                }
-              ],
-              "total": 2,
-              "limit": 10
-            }
-        """.trimIndent()
 
-        val rows = SyncLrcClient.parseSearchResponse(json)
-        assertEquals(1, rows.size)
-        assertEquals("Song", rows[0].track)
-        assertEquals("[00:01.00]<00:01.00>Song", rows[0].karaoke)
-        assertEquals("[00:01.00]Song", rows[0].synced)
-    }
-
-    @Test
-    fun parsesFlatSearchResults() {
-        val json = """
-            {"results":[{"track":"Flat","artist":"One","karaoke":"[00:01.00]flat"}]}
-        """.trimIndent()
-        val rows = SyncLrcClient.parseSearchResponse(json)
-        assertEquals("Flat", rows.single().track)
-        assertEquals("[00:01.00]flat", rows.single().karaoke)
-    }
 
     @Test
     fun pickBestPrefersExactTitleThenClosestDuration() {

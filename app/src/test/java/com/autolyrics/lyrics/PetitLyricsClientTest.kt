@@ -311,4 +311,29 @@ class PetitLyricsClientTest {
         bytes[offset + 2] = ((value ushr 16) and 0xff).toByte()
         bytes[offset + 3] = ((value ushr 24) and 0xff).toByte()
     }
+
+    @Test
+    fun manualHitsMapCandidateTypesToLazyRows() {
+        val word = PetitLyricsClient.PetitLyricsCandidate(
+            lyricsId = "id-1",
+            title = "コネクト",
+            artist = "ClariS",
+            album = "BIRTHDAY",
+            lyricsType = 3,
+            lyricsData = "",
+            durationSec = 271.0
+        )
+        val line = word.copy(lyricsId = "id-2", lyricsType = 2)
+
+        val hits = PetitLyricsClient.manualHits(listOf(line, word), "コネクト", "ClariS")
+
+        assertEquals(2, hits.size)
+        assertTrue(hits.all { it.provider == "PetitLyrics" })
+        assertTrue(hits.all { it.lines.isEmpty() && it.fetch != null })
+        val karaoke = hits.first { it.kind == ManualHitKind.KARAOKE }
+        val synced = hits.first { it.kind == ManualHitKind.SYNCED }
+        assertEquals("PetitLyrics · Karaoke", karaoke.source)
+        assertEquals("PetitLyrics · Synced", synced.source)
+        assertEquals(271, karaoke.durationSec)
+    }
 }

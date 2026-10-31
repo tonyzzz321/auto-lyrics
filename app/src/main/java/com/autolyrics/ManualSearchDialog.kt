@@ -7,6 +7,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.EditText
+import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
@@ -73,6 +74,36 @@ object ManualSearchDialog {
         val titleField = textField(session.title)
         val artistField = textField(session.artist)
 
+        val includeUnsyncedBox = CheckBox(activity).apply {
+            text = "Include unsynced results"
+            isChecked = session.includeUnsynced
+            textSize = 13f
+            setTextColor(Color.parseColor("#CCCCDD"))
+        }
+        val searchButton = TextView(activity).apply {
+            text = if (session.searching) "Searching…" else "Search"
+            setTextColor(Color.parseColor("#AAAACC"))
+            textSize = 13f
+            gravity = Gravity.END
+            setPadding(0, dp(4), dp(4), dp(4))
+        }
+        val actionRow = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(
+                includeUnsyncedBox,
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            )
+            addView(
+                searchButton,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            )
+        }
+        addRow(actionRow)
+
         val statusText = addRow(
             TextView(activity).apply {
                 text = if (session.hits.isNotEmpty()) {
@@ -83,16 +114,6 @@ object ManualSearchDialog {
                 }
                 setTextColor(Color.parseColor("#AAAACC"))
                 textSize = 12f
-            }
-        ) as TextView
-
-        val searchButton = addRow(
-            TextView(activity).apply {
-                text = if (session.searching) "Searching…" else "Search"
-                setTextColor(Color.parseColor("#AAAACC"))
-                textSize = 13f
-                gravity = Gravity.END
-                setPadding(0, dp(4), dp(4), dp(4))
             }
         ) as TextView
 
@@ -117,6 +138,7 @@ object ManualSearchDialog {
 
         fun renderHits(hits: List<ManualSearchHit>, diagnostics: List<String>) {
             resultsGroup.removeAllViews()
+            val visible = ManualSearch.applyUnsyncedFilter(hits, session.includeUnsynced)
             if (hits.isEmpty()) {
                 val detail = diagnostics.joinToString(" · ")
                 statusText.text = if (detail.isBlank()) {
@@ -126,9 +148,12 @@ object ManualSearchDialog {
                 }
                 return
             }
+            val hidden = hits.size - visible.size
             statusText.text =
-                "${hits.size} results · track ${ManualSearch.formatDuration((track.durationMs / 1000).toInt())}"
-            hits.forEach { hit ->
+                "${visible.size} results" +
+                (if (hidden > 0) " ($hidden unsynced hidden)" else "") +
+                " · track ${ManualSearch.formatDuration((track.durationMs / 1000).toInt())}"
+            visible.forEach { hit ->
                 val radio = RadioButton(activity).apply {
                     text = hit.label
                     textSize = 13f
@@ -148,6 +173,11 @@ object ManualSearchDialog {
         }
 
         if (session.hits.isNotEmpty()) renderHits(session.hits, session.diagnostics)
+
+        includeUnsyncedBox.setOnCheckedChangeListener { _, checked ->
+            session.includeUnsynced = checked
+            if (session.hits.isNotEmpty()) renderHits(session.hits, session.diagnostics)
+        }
 
         resultsGroup.setOnCheckedChangeListener { group, checkedId ->
             session.selected = if (checkedId >= 0) {

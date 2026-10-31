@@ -35,16 +35,13 @@ class AaSequenceSimTest {
         private val hasReal = SungLine.firstRealIndex(lines) >= 0
         private val duration = (lines.maxOfOrNull { it.timeMs } ?: 0L) + 40_000
 
-        /** Real indices of the symbol run a countdown row replaced. */
-        private val covered: Set<Int> = buildSet {
-            for (r in rows.filter { it.isGap }) {
-                var k = r.realIndex + 1
-                while (k < count && LyricDisplay.isSymbolText(lines[k].text)) {
-                    add(k)
-                    k++
-                }
+        /** Every symbol line is absent from the sequence: absorbed runs
+         * under their countdown row, leading tags under the INTRO, and
+         * sub-threshold flourishes skipped as if never present. */
+        private val covered: Set<Int> =
+            (0 until count).filterTo(mutableSetOf()) {
+                LyricDisplay.isSymbolText(lines[it].text)
             }
-        }
 
         fun at(pos: Long): Int = SungLine.currentVIndex(rows, lines, pos, count)
 
@@ -87,12 +84,12 @@ class AaSequenceSimTest {
                     // A current countdown means the instrumental is on:
                     // past the anchor's sustained end (grace) or into the
                     // tag run it covers.
-                    val end = SungLine.lineEndMs(lines[row.realIndex])!!
+                    val end = SungLine.lineEndMs(lines[row.realIndex])
                     val coverStart = lines.getOrNull(row.realIndex + 1)
                         ?.takeIf { LyricDisplay.isSymbolText(it.text) }?.timeMs
                     assertTrue(
                         "$tag: countdown current too early @$pos",
-                        pos > end + SungLine.GAP_GRACE_MS ||
+                        (end != null && pos > end + SungLine.GAP_GRACE_MS) ||
                             (coverStart != null && pos >= coverStart)
                     )
                     val cd = SungLine.countdownSeconds(lines, pos, count)
@@ -180,11 +177,89 @@ class AaSequenceSimTest {
     )
 
     @Test
+    fun wordlessTagRunCountsToNextReal() {
+        // Payload without any word timings: the tag run at 0:10 still owns
+        // a countdown (tags are the provider's declaration of instrumental)
+        // and the row is CURRENT from the tag's time, digits ticking to
+        // the 0:15 lyric.
+        val lines = LrcParser.parse(
+            """
+            [00:03.00]hello there
+            [00:10.00]♪
+            [00:15.00]back again
+            [01:00.00]outro line
+            """.trimIndent()
+        )
+        val count = lines.size
+        val rows = SungLine.virtualRows(lines, count)
+        val gap = rows.indexOfFirst { it.isGap }
+        check(gap >= 0)
+        assertEquals(0, rows[gap].realIndex)
+        assertEquals(gap, SungLine.currentVIndex(rows, lines, 10_000, count))
+        assertEquals(4, SungLine.countdownSeconds(lines, 10_000, count))
+        assertEquals(1, SungLine.countdownSeconds(lines, 14_200, count))
+        // Back on the real lyric the moment it starts.
+        assertEquals(
+            rows.indexOfFirst { !it.isGap && it.realIndex == 2 },
+            SungLine.currentVIndex(rows, lines, 15_000, count)
+        )
+    }
+
+    @Test
+    fun skippedFlourishKeepsPreviousLineLit() {
+        // While a SKIPPED flourish tag sounds, the line before it stays
+        // current (never an intro flip, never a stale countdown row from
+        // an earlier instrumental). An ABSORBED run right after still
+        // makes its countdown row current.
+        val lines = LrcParser.parse(
+            """
+            [00:00.00]hello there
+            [00:05.00]♪
+            [00:06.00]right back
+            [00:12.00]♪
+            [00:20.00]after the interlude
+            """.trimIndent()
+        )
+        val count = lines.size
+        val rows = SungLine.virtualRows(lines, count)
+        val hello = rows.indexOfFirst { !it.isGap && it.realIndex == 0 }
+        val back = rows.indexOfFirst { !it.isGap && it.realIndex == 2 }
+        val gap = rows.indexOfFirst { it.isGap }
+        check(hello >= 0 && back > hello && gap > back)
+        // Flourish at 0:05 (next lyric 1 s later): transparent, "hello" lit.
+        assertEquals(hello, SungLine.currentVIndex(rows, lines, 5_000, count))
+        assertEquals(hello, SungLine.currentVIndex(rows, lines, 5_900, count))
+        // Absorbed run at 0:12 (8 s to next lyric): the countdown is current.
+        assertEquals(gap, SungLine.currentVIndex(rows, lines, 12_000, count))
+        assertEquals(gap, SungLine.currentVIndex(rows, lines, 19_000, count))
+    }
+
+    @Test
+    fun shortTagRunSkippedEntirely() {
+        // A tag that does not read as an instrumental (next lyric inside
+        // GAP_MIN_MS of the tag, no token proof) is skipped as if it were
+        // never in the payload: no countdown row AND no symbol row.
+        val lines = LrcParser.parse(
+            """
+            [00:00.00]hello there
+            [00:05.00]♪
+            [00:06.00]right back
+            """.trimIndent()
+        )
+        val rows = SungLine.virtualRows(lines, lines.size)
+        assertTrue(rows.none { it.isGap })
+        assertEquals(listOf(0, 2), rows.map { it.realIndex })
+    }
+
+    @Test
     fun lrclibSyncedSweep() {
         val s = sim("LRCLIB synced", lrclibSynced())
-        // No word timings anywhere: starts alone must never synthesize a
-        // countdown row.
-        assertTrue(s.rows.none { it.isGap })
+        // Word-less payload: UNTAGGED silence must never synthesize a
+        // countdown, but a provider-tagged run self-proves the
+        // instrumental: the ♪ at 0:24 owns a countdown row (anchor = the
+        // third line) counting to the 0:31 lyric. Leading ♪ belongs to
+        // the intro, trailing ♪ to the outro (cut from renderable count).
+        assertEquals(listOf(3), s.rows.filter { it.isGap }.map { it.realIndex })
     }
 
     private fun lrclibEnhanced() = LrcParser.parseKaraoke(

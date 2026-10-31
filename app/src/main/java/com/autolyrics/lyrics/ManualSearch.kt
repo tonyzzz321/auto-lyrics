@@ -79,7 +79,7 @@ object ManualSearch {
                 ?.let { LrcParser.parseKaraoke(it) }
                 ?.filter { it.text.isNotBlank() }
                 .orEmpty()
-            if (syncedLines.isNotEmpty() && syncedLines.any { it.text != "♪" }) {
+            if (LyricsProviderResolver.hasDisplayableLines(syncedLines)) {
                 val karaoke = syncedLines.any { it.words.isNotEmpty() }
                 hits += ManualSearchHit(
                     provider = "LRCLIB",
@@ -99,7 +99,7 @@ object ManualSearch {
                 ?.filter { it.isNotBlank() }
                 ?.map { text -> LyricLine(0L, LrcParser.cleanSpacing(text)) }
                 .orEmpty()
-            if (plainLines.isNotEmpty() && plainLines.any { it.text != "♪" }) {
+            if (LyricsProviderResolver.hasDisplayableLines(plainLines)) {
                 hits += ManualSearchHit(
                     provider = "LRCLIB",
                     title = response.trackName.orEmpty(),
@@ -126,7 +126,7 @@ object ManualSearch {
             ?.filter { it.text.isNotBlank() }
             .orEmpty()
         val isKaraoke = karaokeLines.any { it.words.isNotEmpty() } &&
-            karaokeLines.any { it.text != "♪" }
+            LyricsProviderResolver.hasDisplayableLines(karaokeLines)
         if (isKaraoke) {
             return ManualSearchHit(
                 provider = "SyncLRC",
@@ -145,7 +145,7 @@ object ManualSearch {
             ?.let { LrcParser.parseKaraoke(it) }
             ?.filter { it.text.isNotBlank() }
             .orEmpty()
-        if (syncedLines.isNotEmpty() && syncedLines.any { it.text != "♪" }) {
+        if (LyricsProviderResolver.hasDisplayableLines(syncedLines)) {
             return ManualSearchHit(
                 provider = "SyncLRC",
                 title = response.track.orEmpty(),
@@ -163,7 +163,7 @@ object ManualSearch {
             ?.filter { it.isNotBlank() }
             ?.map { text -> LyricLine(0L, LrcParser.cleanSpacing(text)) }
             .orEmpty()
-        if (plainLines.isNotEmpty() && plainLines.any { it.text != "♪" }) {
+        if (LyricsProviderResolver.hasDisplayableLines(plainLines)) {
             return ManualSearchHit(
                 provider = "SyncLRC",
                 title = response.track.orEmpty(),
@@ -179,11 +179,32 @@ object ManualSearch {
     }
 
     /**
+     * Dialog-side visibility filter: with the "Include unsynced" toggle off,
+     * rows the app would render as not-synced (no timing at all) leave the
+     * pick-list. Karaoke and line-synced rows always stay.
+     */
+    internal fun applyUnsyncedFilter(
+        hits: List<ManualSearchHit>,
+        includeUnsynced: Boolean
+    ): List<ManualSearchHit> =
+        if (includeUnsynced) hits else hits.filter { it.kind != ManualHitKind.PLAIN }
+
+    /**
      * Keeps results whose title plausibly matches the searched title, so an
      * artist-wide fallback query cannot bury the actual song under other
      * recordings by the same artist. Deliberately lenient: dropping a real
      * match would be worse than keeping a near miss.
      */
+    /**
+     * Relevance gate for built rows. SyncLRC rows are exempt: every one is
+     * an iTunes-catalog resolution whose whole purpose is to answer an alias
+     * search (a kana query over a romanized catalog name), and iTunes
+     * already corroborated the artist — the literal title filter would drop
+     * exactly the rows the ladder exists to find.
+     */
+    internal fun passesRelevance(hit: ManualSearchHit, queryTitle: String): Boolean =
+        hit.provider == "SyncLRC" || titleIsRelevant(hit.title, queryTitle)
+
     internal fun titleIsRelevant(resultTitle: String, queryTitle: String): Boolean {
         val query = normalizeSearchTitle(queryTitle)
         if (query.isBlank()) return true

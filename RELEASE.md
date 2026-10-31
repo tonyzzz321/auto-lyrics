@@ -111,9 +111,9 @@ The release job should:
 6. build the minified release APK,
 7. copy it to `auto-lyrics-X.Y.Z.apk`,
 8. upload the workflow artifact,
-9. create tag `vX.Y.Z`,
-10. publish GitHub Release `vX.Y.Z`,
-11. attach the APK and generate release notes.
+10. create tag `vX.Y.Z`,
+11. publish GitHub Release `vX.Y.Z`,
+12. attach the APK and generate release notes.
 
 This is the path used for `v1.12.0`.
 
@@ -166,7 +166,7 @@ For either release trigger, the Linux `build` job performs:
 
 10. upload the APK as a workflow artifact,
 11. create/update GitHub Release `vX.Y.Z`,
-12. attach the APK and generate release notes.
+13. attach the APK and generate release notes.
 
 The release APK is minified and signed using the repository's configured signing setup.
 
@@ -196,12 +196,15 @@ For a functional smoke test, install the release APK and verify:
 5. Musixmatch lookup works on a known supported track.
 6. PetitLyrics works on a known supported track when release credentials are present.
 7. Karaoke mode can select a real WORD_SYNC candidate when it is near-equivalent to the standard winner.
-8. SyncLRC can contribute Enhanced-LRC timing on a known available track, while synced/plain-only responses remain ignored by that provider.
-9. Android Auto shows `Lyrics | Sync | More`.
+8. SyncLRC is queried on every track change; token-bearing karaoke wins, its synced/plain tiers compete as Synced/Not-synced candidates, and a kana/alias track resolves through the iTunes catalog ladder when the exact `/lyrics` name match fails.
+9. Manual Search opens timed-rows-only (the **Include unsynced results** checkbox reveals `Not synced` rows), never lists an all-symbol junk row, and an applied pick survives reload (permanent cache overwrite + forced retranslation).
+9. Android Auto shows `Lyrics | Karaoke | Sync | More`.
 10. Current lyrics display the `▶` marker.
-11. Lyrics tab row count is 5 without translation / 3 with translation.
+11. Lyrics tab is a forward 5-row window with the sung line pinned first, and each row's translation line starts at the same x as its lyric line.
 12. Sync remains a fixed 3-row lyric preview.
-13. ±50 ms AA offset controls still update the view.
+14. ±50 ms AA offset controls still update the view.
+15. An instrumental stretch renders as the countdown row (one `♪` glyph per remaining second, max 4) in the Lyrics, Karaoke, and Sync tabs and on the now-playing card — never as static symbol rows.
+16. A track whose best upload is music-symbol-only resolves to the next provider's real lyrics (or reports not-found); it is never cached as empty 'found' lyrics. A track with no artist tag shows `Unknown Artist` on the AA now-playing card.
 
 ## Local release-like build
 

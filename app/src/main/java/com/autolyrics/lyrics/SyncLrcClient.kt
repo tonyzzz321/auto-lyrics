@@ -24,7 +24,14 @@ object SyncLrcClient {
 
     private const val TAG = "SyncLRC"
     private const val BASE_URL = "https://api.synclrc.dev/lyrics"
-    private const val SEARCH_URL = "https://api.synclrc.dev/search"
+    private const val ITUNES_SEARCH_URL = "https://itunes.apple.com/search"
+
+    /** iTunes gives up to 6 songs; fetching every one would burn the manual
+     *  leg budget. Three exact-match fetches cover the realistic candidates. */
+    private const val CATALOG_LOOKUP_LIMIT = 3
+
+    /** Wall-clock budget for the fallback chain inside the 10 s manual leg. */
+    private const val CATALOG_BUDGET_SEC = 6L
 
     private val gson = Gson()
     private val client = OkHttpClient.Builder()
@@ -39,7 +46,8 @@ object SyncLrcClient {
         val matchedArtist: String,
         val matchedAlbum: String,
         val matchedDurationSec: Double?,
-        val artistQueryCorroborated: Boolean = false
+        val artistQueryCorroborated: Boolean = false,
+        val syncKind: LyricsProviderCandidate.SyncKind = LyricsProviderCandidate.SyncKind.WORD_SYNC
     )
 
     data class ApiResponse(
@@ -56,31 +64,15 @@ object SyncLrcClient {
         @SerializedName("instrumental") val instrumental: Boolean = false
     )
 
-    /** Nested `lyrics` blob of the search endpoint; flat fields are also
-     *  accepted in case a result already carries them at the top level. */
-    data class SearchLyrics(
-        @SerializedName("karaoke") val karaoke: String? = null,
-        @SerializedName("synced") val synced: String? = null,
-        @SerializedName("plain") val plain: String? = null
+    /** iTunes Search API entries; the catalog's alias matching resolves
+     *  script/romanized titles to the exact names catalog services index. */
+    data class ItunesTrack(
+        @SerializedName("trackName") val trackName: String? = null,
+        @SerializedName("artistName") val artistName: String? = null
     )
 
-    data class SearchResult(
-        @SerializedName("id") val id: String? = null,
-        @SerializedName("track") val track: String? = null,
-        @SerializedName("artist") val artist: String? = null,
-        @SerializedName("album") val album: String? = null,
-        @SerializedName("duration") val duration: Double? = null,
-        @SerializedName("instrumental") val instrumental: Boolean = false,
-        @SerializedName("lyrics") val lyrics: SearchLyrics? = null,
-        @SerializedName("karaoke") val karaoke: String? = null,
-        @SerializedName("synced") val synced: String? = null,
-        @SerializedName("plain") val plain: String? = null
-    )
-
-    data class SearchResponse(
-        // Nullable: Gson bypasses constructors, so a missing key yields a
-        // real null despite the Kotlin default.
-        @SerializedName("results") val results: List<SearchResult>? = null
+    data class ItunesResponse(
+        @SerializedName("results") val results: List<ItunesTrack>? = null
     )
 
     fun getKaraokeLyrics(track: TrackInfo): SyncLrcResult? {
@@ -89,7 +81,6 @@ object SyncLrcClient {
         val url = BASE_URL.toHttpUrl().newBuilder()
             .addQueryParameter("track", track.title)
             .addQueryParameter("artist", track.artist)
-            .addQueryParameter("type", "karaoke")
             .apply {
                 if (track.album.isNotBlank()) {
                     addQueryParameter("album", track.album)
@@ -112,41 +103,71 @@ object SyncLrcClient {
 
         return try {
             client.newCall(request).execute().use { response ->
-                debugLog("HTTP ${response.code}; karaoke request")
+                debugLog("HTTP ${response.code}; auto request")
                 if (response.isSuccessful) {
                     return@use parseApiResponse(response.body?.string().orEmpty(), track)
                 }
                 null
-            } ?: searchFallback(track)
+            } ?: itunesFallback(track)
         } catch (e: Exception) {
             debugLog("request failed: ${e.javaClass.simpleName}: ${e.message.orEmpty()}")
-            searchFallback(track)
+            itunesFallback(track)
         }
     }
 
-    /**
-     * Raw lookup for the manual search pick-list. Unlike [getKaraokeLyrics]
-     * nothing is rejected here: the caller surfaces synced/plain payloads too
-     * so the user can see everything the aggregator knows for the terms.
-     */
-    /**
-     * DB-backed candidate search for the manual pick-list. The website uses
-     * this endpoint; unlike `/lyrics` it does not live-aggregate upstream
-     * sources, so it stays available while `/lyrics` reports 503.
-     */
     fun manualSearch(
         title: String,
         artist: String,
         diagnostics: MutableList<String>? = null
     ): List<ApiResponse> {
-        // The free-text q AND-joins every word (like LRCLIB), so "title
-        // artist" finds nothing; search by title and rank candidates by
-        // artist afterwards.
-        val query = title.trim().ifBlank { artist.trim() }
-        if (query.isBlank()) return emptyList()
+        // Same engine as the auto iTunes fallback. The literal DB `/search`
+        // (kana/alias-blind) and the exact playing-name retry (auto already
+        // caches exactly that payload) were dropped, leaving the alias-aware
+        // catalog lookup as the single manual ladder.
+        val trimmedTitle = title.trim()
+        if (trimmedTitle.isBlank()) return emptyList()
+        val rows = if (artist.isBlank()) {
+            listOfNotNull(lyricsFor(trimmedTitle, ""))
+        } else {
+            itunesRows(trimmedTitle, artist)
+        }
+        diagnostics?.plusAssign(
+            if (rows.isEmpty()) "synclrc: no catalog match"
+            else "synclrc: catalog match x${rows.size}"
+        )
+        return rows
+    }
 
-        val url = SEARCH_URL.toHttpUrl().newBuilder()
-            .addQueryParameter("q", query)
+    /**
+     * Alias-resolved catalog rows: iTunes candidates for "title artist"
+     * (romanized/kana spellings survive where the DB's literal matching
+     * cannot), each fetched as an exact-name `/lyrics` row. Shared by the
+     * manual catalog fallback and the auto iTunes fallback.
+     */
+    private fun itunesRows(title: String, artist: String): List<ApiResponse> {
+        if (title.isBlank() || artist.isBlank()) return emptyList()
+        val deadline = System.nanoTime() + java.util.concurrent.TimeUnit
+            .SECONDS.toNanos(CATALOG_BUDGET_SEC)
+        val rows = mutableListOf<ApiResponse>()
+        val seen = mutableSetOf(title.trim().lowercase() + "\u0000" + artist.trim().lowercase())
+        for ((trackName, artistName) in itunesCandidates(title, artist)) {
+            if (System.nanoTime() > deadline) break
+            val key = trackName.lowercase() + "\u0000" + artistName.lowercase()
+            if (!seen.add(key)) continue
+            lyricsFor(trackName, artistName)?.let { rows += it }
+            if (rows.size >= CATALOG_LOOKUP_LIMIT) break
+        }
+        return rows
+    }
+
+    /** Exact-name `/lyrics` fetch; null unless the row carries real text. */
+    private fun lyricsFor(title: String, artist: String): ApiResponse? {
+        if (title.isBlank()) return null
+        val url = BASE_URL.toHttpUrl().newBuilder()
+            .addQueryParameter("track", title.trim())
+            .apply {
+                if (artist.isNotBlank()) addQueryParameter("artist", artist.trim())
+            }
             .build()
         val request = Request.Builder()
             .url(url)
@@ -154,46 +175,68 @@ object SyncLrcClient {
             .header("Accept", "application/json")
             .header("User-Agent", "AutoLyrics/${BuildConfig.VERSION_NAME} (Android; SyncLRC)")
             .build()
-
         return try {
             client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    diagnostics?.plusAssign("synclrc: HTTP ${response.code}")
-                    return@use emptyList()
+                if (!response.isSuccessful) return@use null
+                val parsed = try {
+                    gson.fromJson(response.body?.string(), ApiResponse::class.java)
+                } catch (_: Exception) {
+                    null
                 }
-                diagnostics?.plusAssign("synclrc: ok")
-                parseSearchResponse(response.body?.string().orEmpty())
+                parsed?.takeIf { row ->
+                    !row.instrumental &&
+                        listOf(row.karaoke, row.synced, row.plain)
+                            .any { field -> !field.isNullOrBlank() }
+                }
             }
-        } catch (e: Exception) {
-            diagnostics?.plusAssign("synclrc: ${e.javaClass.simpleName}")
-            emptyList()
+        } catch (_: Exception) {
+            null
         }
     }
 
-    internal fun parseSearchResponse(json: String): List<ApiResponse> {
-        if (json.isBlank()) return emptyList()
-        val parsed = try {
-            gson.fromJson(json, SearchResponse::class.java)
+    internal fun parseItunesResponse(json: String): List<Pair<String, String>> =
+        (try {
+            gson.fromJson(json, ItunesResponse::class.java)
         } catch (_: Exception) {
             null
-        } ?: return emptyList()
-        return parsed.results.orEmpty().mapNotNull { result ->
-            val lyrics = result.lyrics
-            val response = ApiResponse(
-                id = result.id,
-                track = result.track,
-                artist = result.artist,
-                album = result.album,
-                duration = result.duration,
-                instrumental = result.instrumental,
-                karaoke = lyrics?.karaoke ?: result.karaoke,
-                synced = lyrics?.synced ?: result.synced,
-                plain = lyrics?.plain ?: result.plain
-            )
-            response.takeIf {
-                listOf(it.karaoke, it.synced, it.plain)
-                    .any { field -> !field.isNullOrBlank() }
+        })?.results.orEmpty()
+            .mapNotNull { track ->
+                val name = track.trackName?.trim().orEmpty()
+                if (name.isBlank()) null
+                else name to track.artistName?.trim().orEmpty()
             }
+            .distinct()
+
+    private fun itunesCandidates(title: String, artist: String): List<Pair<String, String>> {
+        val term = listOf(title, artist).filter { it.isNotBlank() }.joinToString(" ")
+        val url = ITUNES_SEARCH_URL.toHttpUrl().newBuilder()
+            .addQueryParameter("term", term)
+            .addQueryParameter("media", "music")
+            .addQueryParameter("entity", "song")
+            .addQueryParameter("limit", "6")
+            .build()
+        val request = Request.Builder()
+            .url(url)
+            .get()
+            .header("User-Agent", "AutoLyrics/${BuildConfig.VERSION_NAME}")
+            .build()
+        return try {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    emptyList()
+                } else {
+                    parseItunesResponse(response.body?.string().orEmpty())
+                        .filter { (_, artistName) ->
+                            // Without an artist tiebreak, iTunes' top hits for
+                            // a common title are other artists' songs.
+                            artistName.isBlank() || artist.isBlank() ||
+                                artistName.contains(artist, ignoreCase = true) ||
+                                artist.contains(artistName, ignoreCase = true)
+                        }
+                }
+            }
+        } catch (_: Exception) {
+            emptyList()
         }
     }
 
@@ -234,14 +277,19 @@ object SyncLrcClient {
     }
 
     /**
-     * The `/lyrics` endpoint live-aggregates upstream sources and can report
-     * 503 SOURCES_UNAVAILABLE while the DB-backed endpoints stay healthy;
-     * the search endpoint then covers the same catalogue.
+     * Second auto stage and the whole manual ladder: the website-style
+     * iTunes-resolved catalog lookup, for the cases where the exact
+     * `/lyrics` call cannot match the session names (alias/script spellings,
+     * or live aggregation down while the DB behind `/lyrics` lookups is
+     * healthy).
      */
-    private fun searchFallback(track: TrackInfo): SyncLrcResult? {
-        val candidates = manualSearch(track.title, track.artist)
-        val best = pickBestCandidate(candidates, track) ?: return null
-        debugLog("search fallback selected '${best.track.orEmpty()}'")
+    private fun itunesFallback(track: TrackInfo): SyncLrcResult? {
+        // Auto ladder: the exact /lyrics call with the session names already
+        // failed above, and the DB-backed /search matches those same literal
+        // names, so it adds almost nothing for a single auto winner. Go
+        // straight to the website-style iTunes-resolved catalog lookup.
+        val best = pickBestCandidate(itunesRows(track.title, track.artist), track) ?: return null
+        debugLog("catalog fallback selected '${best.track.orEmpty()}'")
         return parseResponse(best, track)
     }
 
@@ -270,48 +318,82 @@ object SyncLrcClient {
             return null
         }
 
+        // Every tier is a candidate now: the aggregator sources NetEase/QQ/
+        // Kugou/LDDC, so its synced lines are sometimes the ONLY synced copy of
+        // a CJK track anywhere we can reach. Karaoke still wins when present.
+        val legacyType = response.type?.lowercase().orEmpty()
         val karaokeLyrics = response.karaoke
             ?.takeIf { it.isNotBlank() }
             ?: response.lyrics
-                ?.takeIf {
-                    it.isNotBlank() && response.type.equals("karaoke", ignoreCase = true)
-                }
-
-        // A type=karaoke request can still contain only synced/plain data. LRCLIB
-        // already covers those formats directly, so SyncLRC contributes only when
-        // a genuine Enhanced-LRC karaoke payload is present.
-        if (karaokeLyrics == null) {
-            debugLog(
-                "response has no karaoke payload; legacyType=${response.type.orEmpty()} " +
-                    "synced=${!response.synced.isNullOrBlank()} plain=${!response.plain.isNullOrBlank()}"
-            )
-            return null
-        }
-
-        val lines = LrcParser.parseKaraoke(karaokeLyrics)
-        if (lines.none { it.words.isNotEmpty() }) {
-            debugLog("karaoke payload rejected: no timed tokens")
-            return null
-        }
+                ?.takeIf { it.isNotBlank() && legacyType == "karaoke" }
+        val syncedLyrics = response.synced
+            ?.takeIf { it.isNotBlank() }
+            ?: response.lyrics
+                ?.takeIf { it.isNotBlank() && legacyType == "synced" }
+        val plainLyrics = response.plain
+            ?.takeIf { it.isNotBlank() }
+            ?: response.lyrics
+                ?.takeIf { it.isNotBlank() && legacyType == "plain" }
 
         val fallback = requestedTrack
         val title = response.track.orEmpty().ifBlank { fallback?.title.orEmpty() }
         val artist = response.artist.orEmpty().ifBlank { fallback?.artist.orEmpty() }
         val album = response.album.orEmpty().ifBlank { fallback?.album.orEmpty() }
 
-        debugLog(
-            "karaoke accepted lines=${lines.size} tokens=${lines.sumOf { it.words.size }} " +
-                "track='${title}' artist='${artist}'"
-        )
+        fun accepted(
+            lines: List<LyricLine>,
+            kind: LyricsProviderCandidate.SyncKind,
+            note: String
+        ): SyncLrcResult {
+            debugLog(note)
+            return SyncLrcResult(
+                lines = lines,
+                matchedTitle = title,
+                matchedArtist = artist,
+                matchedAlbum = album,
+                matchedDurationSec = response.duration,
+                artistQueryCorroborated = requestedTrack?.artist?.isNotBlank() == true,
+                syncKind = kind
+            )
+        }
 
-        return SyncLrcResult(
-            lines = lines,
-            matchedTitle = title,
-            matchedArtist = artist,
-            matchedAlbum = album,
-            matchedDurationSec = response.duration,
-            artistQueryCorroborated = requestedTrack?.artist?.isNotBlank() == true
+        if (karaokeLyrics != null) {
+            val lines = LrcParser.parseKaraoke(karaokeLyrics)
+            if (lines.any { it.words.isNotEmpty() }) {
+                return accepted(
+                    lines,
+                    LyricsProviderCandidate.SyncKind.WORD_SYNC,
+                    "karaoke accepted lines=${lines.size} tokens=${lines.sumOf { it.words.size }} " +
+                        "track='${title}' artist='${artist}'"
+                )
+            }
+            debugLog("karaoke payload has no timed tokens; trying lower tiers")
+        }
+        if (syncedLyrics != null) {
+            val lines = LrcParser.parseKaraoke(syncedLyrics)
+            if (lines.isNotEmpty()) {
+                return accepted(
+                    lines,
+                    LyricsProviderCandidate.SyncKind.LINE_SYNC,
+                    "synced accepted lines=${lines.size} track='${title}' artist='${artist}'"
+                )
+            }
+        }
+        if (plainLyrics != null) {
+            val lines = plainLyrics.lines()
+                .filter { it.isNotBlank() }
+                .map { text -> LyricLine(0L, LrcParser.cleanSpacing(text)) }
+            if (lines.isNotEmpty()) {
+                return accepted(lines, LyricsProviderCandidate.SyncKind.PLAIN, "plain accepted lines=${lines.size}")
+            }
+        }
+
+        debugLog(
+            "response rejected: no usable payload; legacyType=${legacyType} " +
+                "karaoke=${!karaokeLyrics.isNullOrBlank()} synced=${!syncedLyrics.isNullOrBlank()} " +
+                "plain=${!plainLyrics.isNullOrBlank()}"
         )
+        return null
     }
 
     private fun debugLog(message: String) {

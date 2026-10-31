@@ -10,9 +10,8 @@
 -keep class * extends com.google.gson.reflect.TypeToken
 -keep class com.autolyrics.lyrics.LrcLibClient$LrcLibResponse { *; }
 -keep class com.autolyrics.lyrics.SyncLrcClient$ApiResponse { *; }
--keep class com.autolyrics.lyrics.SyncLrcClient$SearchResponse { *; }
--keep class com.autolyrics.lyrics.SyncLrcClient$SearchResult { *; }
--keep class com.autolyrics.lyrics.SyncLrcClient$SearchLyrics { *; }
+-keep class com.autolyrics.lyrics.SyncLrcClient$ItunesTrack { *; }
+-keep class com.autolyrics.lyrics.SyncLrcClient$ItunesResponse { *; }
 -keep class com.autolyrics.lyrics.LyricsCache$CachedResult { *; }
 -keep class com.autolyrics.lyrics.LyricsCache$CachedLine { *; }
 -keep class com.autolyrics.lyrics.LyricsCache$CachedWord { *; }

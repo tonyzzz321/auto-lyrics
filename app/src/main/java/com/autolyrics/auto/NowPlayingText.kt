@@ -218,7 +218,10 @@ internal object NowPlayingText {
      *    (it used to be appended after "\n", which a single-line field never showed);
      * 2. the next chunk of the same (long) line, so the continuation is readable;
      * 3. the next lyric line;
-     * 4. [END_MARK] on the last line.
+     * 4. blank on the last line - nothing comes next, so the subtitle
+     *    line shows nothing rather than a lone music mark. (Every lyrics
+     *    path filters blank lines at parse, so a blank FOLLOW-up line
+     *    cannot reach here: the END mark is purely the countdown card's.)
      */
     fun subtitleFor(
         titleChunks: List<String>,
@@ -228,8 +231,7 @@ internal object NowPlayingText {
     ): String {
         if (!translationChunk.isNullOrBlank()) return translationChunk
         titleChunks.getOrNull(activeChunk + 1)?.let { return it }
-        if (nextLineText == null) return END_MARK
-        return nextLineText.ifBlank { END_MARK }
+        return nextLineText.orEmpty()
     }
 }
 

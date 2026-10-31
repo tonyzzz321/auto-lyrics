@@ -2,6 +2,8 @@ package com.autolyrics.lyrics
 
 import com.autolyrics.model.LyricsStatus
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class ManualSearchTest {
@@ -148,6 +150,62 @@ class ManualSearchTest {
         assertEquals(ManualHitKind.KARAOKE, hit.kind)
         assertEquals("LRCLIB · Karaoke", hit.source)
         assertEquals(listOf("hello ", "world"), hit.lines.single().words.map { it.text })
+    }
+
+    @Test
+    fun aliasCatalogRowsSkipTheTitleFilter() {
+        val alias = syncedHit.copy(provider = "SyncLRC", title = "Connect")
+        val foreign = syncedHit.copy(provider = "LRCLIB", title = "Connect")
+
+        // Kana query: only the catalog-resolved row survives the gate.
+        assertTrue(ManualSearch.passesRelevance(alias, "コネクト"))
+        assertFalse(ManualSearch.passesRelevance(foreign, "コネクト"))
+    }
+
+    @Test
+    fun unsyncedToggleHidesOnlyPlainRows() {
+        val karaoke = syncedHit.copy(kind = ManualHitKind.KARAOKE)
+        val plain = syncedHit.copy(kind = ManualHitKind.PLAIN)
+        val hits = listOf(karaoke, syncedHit, plain)
+
+        assertEquals(hits, ManualSearch.applyUnsyncedFilter(hits, includeUnsynced = true))
+        assertEquals(
+            listOf(karaoke, syncedHit),
+            ManualSearch.applyUnsyncedFilter(hits, includeUnsynced = false)
+        )
+    }
+
+    @Test
+    fun symbolOnlyPayloadsAreFilteredFromManualRows() {
+        val symbolSynced = "[00:01.00] ♪ ♪ ♪\n[00:05.00] 🎵"
+        val symbolPlain = "♪\n[Music]\n(Instrumental)"
+
+        assertEquals(
+            emptyList<ManualSearchHit>(),
+            ManualSearch.toHits(
+                listOf(response(1, "Interlude", "Artist", 60.0, symbolSynced, symbolPlain))
+            )
+        )
+
+        // A real line alongside symbols still passes.
+        val mixed = ManualSearch.toHits(
+            listOf(response(2, "Song", "Artist", 60.0, "[00:01.00] ♪\n[00:05.00] real line", null))
+        )
+        assertEquals(1, mixed.size)
+
+        // SyncLRC tiers: karaoke field full of tags falls through to nothing.
+        assertEquals(
+            null,
+            ManualSearch.toSyncLrcHit(
+                SyncLrcClient.ApiResponse(
+                    karaoke = "[00:01.00]<00:01.00>♪",
+                    synced = "[00:01.00] ♪ ♪",
+                    plain = "[Music]",
+                    track = "T",
+                    artist = "A"
+                )
+            )
+        )
     }
 
     @Test

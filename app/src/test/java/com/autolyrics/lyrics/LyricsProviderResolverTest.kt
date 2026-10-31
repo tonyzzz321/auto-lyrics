@@ -5,6 +5,7 @@ import com.autolyrics.model.LyricWord
 import com.autolyrics.model.LyricsStatus
 import com.autolyrics.model.TrackInfo
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -335,6 +336,50 @@ class LyricsProviderResolverTest {
         val selected = LyricsProviderResolver.selectBest(track, listOf(plain, synced))
 
         assertEquals("PetitLyrics", selected?.candidate?.provider)
+    }
+
+    @Test
+    fun symbolOnlyPayloadsAreRejectedSoRealCandidatesWin() {
+        fun symbolCandidate(provider: String, texts: List<String>) = LyricsProviderCandidate(
+            provider = provider,
+            title = "Test Song",
+            artist = "Test Artist",
+            album = "Test Album",
+            durationSec = 180.0,
+            lines = texts.mapIndexed { i, t -> LyricLine((i + 1) * 5_000L, t) },
+            status = LyricsStatus.FOUND,
+            source = "$provider · Synced",
+            syncKind = LyricsProviderCandidate.SyncKind.LINE_SYNC
+        )
+        val junk = symbolCandidate(
+            "LRCLIB",
+            listOf("♪", "♪ ♪", "🎵", "[Music]", "(Instrumental)", "   ")
+        )
+        val real = candidate(
+            provider = "Musixmatch",
+            title = "Test Song",
+            artist = "Test Artist",
+            album = "Test Album",
+            durationSec = 180.0,
+            syncKind = LyricsProviderCandidate.SyncKind.LINE_SYNC
+        )
+
+        assertFalse(LyricsProviderResolver.hasDisplayableContent(junk))
+        assertTrue(LyricsProviderResolver.hasDisplayableContent(real))
+        assertTrue(
+            LyricsProviderResolver.hasDisplayableContent(
+                symbolCandidate("LRCLIB", listOf("♪", "a real lyric line"))
+            )
+        )
+
+        val track = TrackInfo("Test Song", "Test Artist", "Test Album", 180_000L)
+        // The junk payload is the FIRST candidate and from the more trusted
+        // provider; it must still lose to the payload with actual lyrics.
+        val selected = LyricsProviderResolver.selectBest(track, listOf(junk, real))
+        assertEquals("Musixmatch", selected?.candidate?.provider)
+
+        // All-junk field resolves as if no lyrics were found at all.
+        assertNull(LyricsProviderResolver.selectBest(track, listOf(junk)))
     }
 
     private fun candidate(

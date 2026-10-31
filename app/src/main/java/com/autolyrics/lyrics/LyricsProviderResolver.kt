@@ -3,6 +3,7 @@ package com.autolyrics.lyrics
 import com.autolyrics.model.LyricLine
 import com.autolyrics.model.LyricsStatus
 import com.autolyrics.model.TrackInfo
+import com.autolyrics.util.LyricDisplay
 import kotlin.math.abs
 
 /**
@@ -66,7 +67,8 @@ object LyricsProviderResolver {
         candidates: Collection<LyricsProviderCandidate>,
         preferWordSync: Boolean = false
     ): LyricsProviderScore? {
-        val scored = scoreCandidates(track, candidates)
+        val displayable = candidates.filter { hasDisplayableContent(it) }
+        val scored = scoreCandidates(track, displayable)
         val synced = scored.filter { it.candidate.status == LyricsStatus.FOUND }
         val standardBest = synced.maxByOrNull { it.finalScore }
 
@@ -92,6 +94,21 @@ object LyricsProviderResolver {
             .filter { it.candidate.status == LyricsStatus.PLAIN_ONLY }
             .maxByOrNull { it.finalScore }
     }
+
+    /**
+     * Auto-resolution treats an all-blank/all-symbol payload as NO lyrics.
+     * Such a payload renders as nothing (the display sequence skips every
+     * symbol line), and accepting it would cache the track permanently as a
+     * success, out-competing the next-best provider that has real text. The
+     * detector is the display's own `isSymbolText`, so acceptance and
+     * rendering can never disagree about what counts as lyric content.
+     */
+    internal fun hasDisplayableContent(candidate: LyricsProviderCandidate): Boolean =
+        hasDisplayableLines(candidate.lines)
+
+    /** Line-list form of the junk gate, shared with the Manual Search rows. */
+    internal fun hasDisplayableLines(lines: List<LyricLine>): Boolean =
+        lines.any { !LyricDisplay.isSymbolText(it.text) }
 
     internal fun hasUsableWordTiming(candidate: LyricsProviderCandidate): Boolean {
         return candidate.syncKind == LyricsProviderCandidate.SyncKind.WORD_SYNC &&

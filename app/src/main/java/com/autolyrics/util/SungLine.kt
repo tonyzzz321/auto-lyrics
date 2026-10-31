@@ -112,23 +112,36 @@ internal object SungLine {
      */
     data class VRow(val realIndex: Int, val isGap: Boolean)
 
+    /** First non-symbol line at or after [from] (returns [count] if none). */
+    private fun firstRealFrom(lines: List<LyricLine>, from: Int, count: Int): Int {
+        var k = maxOf(0, from)
+        while (k < count && LyricDisplay.isSymbolText(lines[k].text)) k++
+        return k
+    }
+
     /**
      * The coming lyric of the instrumental gap owned by line [i], or null
-     * when it owns none: [i] must be token-timed and the next REAL lyric
-     * (symbol tag lines in between belong to the gap) must start more than
-     * [GAP_MIN_MS] after the sustained end. Token-less payloads never own
-     * a gap; starts alone cannot prove a silence. Lines past the last
-     * renderable lyric never own one (outro shows no countdown).
+     * when it owns none. Two independent proofs, either sufficient:
+     * 1. TAG-DECLARED: the provider tagged the instrumental with symbol
+     *    lines and the next REAL lyric (past the whole run) starts at least
+     *    [GAP_MIN_MS] after the first tag. Tags are an explicit statement
+     *    of "music here", so this works for EVERY payload type, word-less
+     *    synced included.
+     * 2. TIME-PROVEN (untagged silence): [i] is token-timed and the next
+     *    REAL lyric starts more than [GAP_MIN_MS] after its sustained end.
+     *    Token-less payloads cannot use this leg: starts alone cannot prove
+     *    a silence.
+     * Lines past the last renderable lyric never own one (outro shows no
+     * countdown).
      */
     fun gapTarget(lines: List<LyricLine>, i: Int, count: Int): LyricLine? {
         if (i < 0 || i >= count) return null
-        val a = lines[i]
-        if (LyricDisplay.isSymbolText(a.text)) return null
-        val end = lineEndMs(a) ?: return null
-        var k = i + 1
-        while (k < count && LyricDisplay.isSymbolText(lines[k].text)) k++
+        if (LyricDisplay.isSymbolText(lines[i].text)) return null
+        val k = firstRealFrom(lines, i + 1, count)
         if (k >= count) return null
         val next = lines[k]
+        if (k > i + 1 && next.timeMs - lines[i + 1].timeMs >= GAP_MIN_MS) return next
+        val end = lineEndMs(lines[i]) ?: return null
         return next.takeIf { it.timeMs - end > GAP_MIN_MS }
     }
 
@@ -139,12 +152,21 @@ internal object SungLine {
     /** The display sequence: real lines interleaved with virtual countdown
      * rows after every line that owns a gap. A symbol run tagging the
      * instrumental is REPLACED by its countdown row (one music row counting
-     * to the coming words instead of a run of static triples). */
+     * to the coming words instead of a run of static triples). Leading
+     * tags are consumed the same way by the INTRO countdown (currentVIndex
+     * -1), so the sequence starts at the first real lyric — unless the
+     * "song" is all symbols, which keeps its plain rows. */
     fun virtualRows(lines: List<LyricLine>, count: Int): List<VRow> {
         val out = ArrayList<VRow>(count + 4)
-        var i = 0
         val n = minOf(count, lines.size)
+        var i = firstRealFrom(lines, 0, n)
         while (i < n) {
+            if (LyricDisplay.isSymbolText(lines[i].text)) {
+                // Sub-threshold flourish the countdown declined: skip it
+                // as if it were never in the payload.
+                i++
+                continue
+            }
             out.add(VRow(i, false))
             if (gapAfter(lines, i, count)) {
                 out.add(VRow(i, true))
@@ -157,10 +179,15 @@ internal object SungLine {
         return out
     }
 
-    /** True once [posMs] is into the gap owned by line [i] (past its
-     * sustained end plus the grace): the virtual countdown row is CURRENT. */
-    fun gapActive(lines: List<LyricLine>, i: Int, posMs: Long): Boolean {
-        val end = lines.getOrNull(i)?.let { lineEndMs(it) } ?: return false
+    /** True once [posMs] is into the gap owned by line [i]: the virtual
+     * countdown row is CURRENT. Active from the first tag's time when the
+     * provider declared the instrumental, otherwise from the sustained end
+     * plus grace; either leg alone suffices (whichever comes first). */
+    fun gapActive(lines: List<LyricLine>, i: Int, count: Int, posMs: Long): Boolean {
+        val a = lines.getOrNull(i) ?: return false
+        val k = firstRealFrom(lines, i + 1, count)
+        if (k > i + 1 && k < count && posMs >= lines[i + 1].timeMs) return true
+        val end = lineEndMs(a) ?: return false
         return posMs > end + GAP_GRACE_MS
     }
 
@@ -179,11 +206,19 @@ internal object SungLine {
         if (real < 0) return -1
         val v = rows.indexOfFirst { !it.isGap && it.realIndex == real }
         if (v < 0) {
-            // The sung line is a symbol tag covered by a countdown row:
-            // the instrumental is on, so its countdown row is current.
-            return rows.indexOfLast { it.isGap && it.realIndex < real }
+            // The sung line is a symbol tag, absent from the sequence.
+            // If the row after the previous sequence member is a countdown,
+            // the tag is part of that absorbed instrumental: the countdown
+            // is current. Otherwise the tag was a sub-threshold flourish
+            // skipped as if absent: the line before it stays lit.
+            val lastBefore = rows.indexOfLast { !it.isGap && it.realIndex < real }
+            return if (rows.getOrNull(lastBefore + 1)?.isGap == true) {
+                lastBefore + 1
+            } else {
+                lastBefore
+            }
         }
-        if (rows.getOrNull(v + 1)?.isGap == true && gapActive(lines, real, posMs)) return v + 1
+        if (rows.getOrNull(v + 1)?.isGap == true && gapActive(lines, real, count, posMs)) return v + 1
         return v
     }
 }

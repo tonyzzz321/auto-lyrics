@@ -228,6 +228,65 @@ object PetitLyricsClient {
         ).firstOrNull()
     }
 
+    /**
+     * Candidate list for the manual pick-list, mirroring the other manual
+     * legs: list now, decode the body only when a row is applied (Type 3
+     * carries its body inline in the candidate; Type 2 fetches on demand).
+     * Silent no-op when the provider identity is unconfigured.
+     */
+    fun manualSearch(
+        title: String,
+        artist: String,
+        diagnostics: MutableList<String>? = null
+    ): List<ManualSearchHit> {
+        if (!isConfigured || title.isBlank()) return emptyList()
+        val candidates = requestCandidates(
+            title = title,
+            artist = artist.trim(),
+            album = "",
+            lyricsType = 3,
+            maxCount = SEARCH_MAX_COUNT,
+            logLabel = "manual"
+        )
+        val hits = manualHits(candidates, title, artist)
+        diagnostics?.plusAssign("petitlyrics: ${hits.size}")
+        return hits
+    }
+
+    internal fun manualHits(
+        candidates: List<PetitLyricsCandidate>,
+        requestedTitle: String,
+        requestedArtist: String
+    ): List<ManualSearchHit> = rankCandidates(
+        candidates = candidates,
+        requestedTitle = requestedTitle,
+        requestedArtist = requestedArtist,
+        requestedAlbum = "",
+        artistQueryCorroborated = requestedArtist.isNotBlank()
+    ).map { candidate ->
+        val karaoke = candidate.lyricsType == 3
+        val source = if (karaoke) "PetitLyrics · Karaoke" else "PetitLyrics · Synced"
+        ManualSearchHit(
+            provider = "PetitLyrics",
+            title = candidate.title,
+            artist = candidate.artist,
+            durationSec = candidate.durationSec?.toInt(),
+            kind = if (karaoke) ManualHitKind.KARAOKE else ManualHitKind.SYNCED,
+            lines = emptyList(),
+            status = LyricsStatus.FOUND,
+            source = source,
+            fetch = {
+                decodeCandidate(candidate)?.let { result ->
+                    MusixmatchClient.ManualFetched(
+                        lines = result.lines,
+                        status = LyricsStatus.FOUND,
+                        source = source
+                    )
+                }
+            }
+        )
+    }
+
     private fun requestCandidates(
         title: String,
         artist: String,

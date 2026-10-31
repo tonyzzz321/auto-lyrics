@@ -14,6 +14,7 @@ import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
 import androidx.media.MediaBrowserServiceCompat
+import java.util.Locale
 import com.autolyrics.lyrics.LlmTranslator
 import com.autolyrics.lyrics.LyricsTranslator
 import com.autolyrics.lyrics.TranslationLanguages
@@ -42,6 +43,7 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
     private var displayedGap = false
     private var displayedCountdown = 0
     private var displayedHeaderSec = -1L
+    private var displayedOffsetMs = 0L
     private var displayedWindowEnd = -1
     private var displayedCurrentIdx = -1
     private var displayedStatus: LyricsStatus? = null
@@ -101,9 +103,10 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         private const val KARAOKE_MENU_ID = "karaoke_menu"
         private const val SYNC_MENU_ID = "sync_menu"
         private const val MORE_MENU_ID = "more_menu"
+        private const val SYNC_OFFSET_ID = "sync_offset"
         private const val SYNC_MINUS_ID = "sync_minus"
         private const val SYNC_PLUS_ID = "sync_plus"
-        private const val SYNC_STEP_MS = 50L
+        private const val SYNC_STEP_MS = 200L
         private const val SYNC_WINDOW_SIZE = 3
         private const val DEFAULT_WINDOW_SIZE = 5
         // Host rule learned from live rows: title lines drop the U+2000-family
@@ -551,19 +554,26 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         state: LyricsState,
         items: MutableList<MediaBrowserCompat.MediaItem>
     ) {
-        val sign = if (aaOffsetMs >= 0) "+" else ""
-        items.add(buildTextItem("sync_offset", "AA Offset: ${sign}${aaOffsetMs}ms"))
+        // The Sync tab owns the PER-LYRICS offset — the global AA delta has
+        // no row here at all (phone-only editor, like the edge knob). The
+        // ± rows are PLAYABLE and the tap jumps to the player: that is the
+        // host's documented browse semantics (any playable selection opens
+        // the playback view), and the only stay-in-place alternative —
+        // adjust-on-load inside BROWSABLE folders — broke because Gearhead
+        // loads listed folders' children without any tap (prefetch moves
+        // the offset on its own).
+        val stepSec = String.format(Locale.US, "%.1f", SYNC_STEP_MS / 1000.0)
+        if (state.lines.isNotEmpty()) {
+            val sec = String.format(Locale.US, "%.1f", state.offsetMs / 1000.0)
+            val sign = if (state.offsetMs >= 0) "+" else ""
+            items.add(buildTextItem(SYNC_OFFSET_ID, "Current offset: $sign${sec}s"))
+        }
         if (state.status == LyricsStatus.NOT_FOUND) {
             items.add(buildTextItem("sync_not_found", NO_LYRICS_MESSAGE))
         }
         if (state.lines.isNotEmpty()) {
-            items.add(
-                buildTextItem(
-                    SYNC_MINUS_ID,
-                    "◀◀  Delay lyrics",
-                    subtitle = "−${SYNC_STEP_MS} ms"
-                )
-            )
+            items.add(buildTextItem(SYNC_MINUS_ID, "◀◀  Delay lyrics: −${stepSec}s"))
+            items.add(buildTextItem(SYNC_PLUS_ID, "▶▶  Advance lyrics: +${stepSec}s"))
 
             val posMs = getAaPositionMs()
             val syncCount = renderableLineCount(state.lines)
@@ -610,16 +620,7 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
                 addRow(i, i == curV)
             }
 
-            items.add(
-                buildTextItem(
-                    SYNC_PLUS_ID,
-                    "▶▶  Advance lyrics",
-                    subtitle = "+${SYNC_STEP_MS} ms"
-                )
-            )
         }
-
-
     }
 
     private fun buildMoreMenu(
@@ -684,8 +685,6 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
             items.add(buildTextItem("more_duration", "Duration", subtitle = formatTime(track.durationMs)))
         }
 
-        val sign = if (aaOffsetMs >= 0) "+" else ""
-        items.add(buildTextItem("more_offset", "AA Offset", subtitle = "${sign}${aaOffsetMs}ms"))
 
     }
 
@@ -1387,8 +1386,11 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         // its two-line grid whenever translations are active), so the
         // host's per-second refresh can only repaint, never shift rows.
         val headerTickChanged = win.headerSec != displayedHeaderSec
+        // The Sync tab prints the per-lyrics offset; phone-side edits must
+        // reach the head unit even while paused (no other field moves).
+        val offsetChanged = state.offsetMs != displayedOffsetMs
         if (!windowChanged && !lineChanged && !gapChanged && !countdownChanged &&
-            !headerTickChanged &&
+            !headerTickChanged && !offsetChanged &&
             !statusChanged && !sourceChanged && !detectedLanguageChanged &&
             !translationAvailabilityChanged && !translationsVisibleChanged
         ) {
@@ -1402,7 +1404,8 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
             translationAvailabilityChanged || translationsVisibleChanged
         ) notifyMask = notifyMask or NOTIFY_LYRICS
         if (lineChanged || gapChanged || countdownChanged || statusChanged ||
-            translationAvailabilityChanged || translationsVisibleChanged
+            translationAvailabilityChanged || translationsVisibleChanged ||
+            offsetChanged
         ) {
             notifyMask = notifyMask or NOTIFY_SYNC
         }
@@ -1422,6 +1425,7 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         displayedGap = win.gap
         displayedCountdown = win.countdown
         displayedHeaderSec = win.headerSec
+        displayedOffsetMs = state.offsetMs
         displayedStatus = state.status
         displayedSource = state.source
         displayedDetectedLanguage = state.detectedLanguage
@@ -1496,10 +1500,13 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
             if (mediaId == null) return
 
             if (mediaId == SYNC_MINUS_ID || mediaId == SYNC_PLUS_ID) {
-                if (mediaId == SYNC_MINUS_ID) aaOffsetMs -= SYNC_STEP_MS
-                else aaOffsetMs += SYNC_STEP_MS
-                getSharedPreferences("auto_lyrics_prefs", MODE_PRIVATE)
-                    .edit().putLong("aa_offset_ms", aaOffsetMs).apply()
+                // Per-lyrics store through the tracker (no-op while nothing
+                // is loaded — the ± rows only render with lyrics on screen).
+                // The tap also opens the host's playback view (unavoidable
+                // for playables); the card there rides the new offset.
+                mediaTracker.adjustOffset(
+                    if (mediaId == SYNC_MINUS_ID) -SYNC_STEP_MS else SYNC_STEP_MS
+                )
                 notifyBrowseSections()
                 return
             }

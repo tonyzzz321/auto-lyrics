@@ -430,104 +430,6 @@
                 style="?attr/materialButtonOutlinedStyle" />
         </LinearLayout>
 
-        <!-- Phone Sync offset row -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:layout_marginTop="8dp">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Phone Sync"
-                android:textColor="#CCCCDD"
-                android:textSize="13sp" />
-
-            <com.autolyrics.ui.SettingInfoView
-                android:id="@+id/info_phone_offset"
-                android:layout_width="22dp"
-                android:layout_height="22dp"
-                android:layout_marginStart="4dp"
-                android:text="ⓘ"
-                android:textColor="#777792"
-                android:textSize="12sp"
-                android:gravity="center"
-                android:background="?attr/selectableItemBackgroundBorderless"
-                android:contentDescription="Shifts lyric timing on the phone display. Fine-tune presets and Tap to Sync stay below the lyrics." />
-
-            <View
-                android:layout_width="0dp"
-                android:layout_height="1dp"
-                android:layout_weight="1" />
-
-            <Button
-                android:id="@+id/btn_delay_minus"
-                android:layout_width="48dp"
-                android:layout_height="34dp"
-                android:text="−50"
-                android:textSize="11sp"
-                android:textColor="#CCCCDD"
-                android:backgroundTint="#2A2A3E"
-                android:contentDescription="Move phone lyrics 50 milliseconds earlier"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:textAllCaps="false"
-                android:minWidth="0dp"
-                android:padding="0dp"
-                style="?attr/materialButtonOutlinedStyle" />
-
-            <TextView
-                android:id="@+id/tv_delay"
-                android:layout_width="56dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="4dp"
-                android:layout_marginEnd="4dp"
-                android:text="0ms"
-                android:textColor="#CCCCDD"
-                android:textSize="13sp"
-                android:fontFamily="sans-serif-medium"
-                android:minWidth="52dp"
-                android:maxLines="1"
-                android:gravity="center" />
-
-            <Button
-                android:id="@+id/btn_delay_plus"
-                android:layout_width="48dp"
-                android:layout_height="34dp"
-                android:text="+50"
-                android:textSize="11sp"
-                android:textColor="#CCCCDD"
-                android:backgroundTint="#2A2A3E"
-                android:contentDescription="Move phone lyrics 50 milliseconds later"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:textAllCaps="false"
-                android:minWidth="0dp"
-                android:padding="0dp"
-                style="?attr/materialButtonOutlinedStyle" />
-
-            <Button
-                android:id="@+id/btn_phone_delay_reset"
-                android:layout_width="36dp"
-                android:layout_height="34dp"
-                android:layout_marginStart="4dp"
-                android:text="⟳"
-                android:textSize="14sp"
-                android:textColor="#D7A0A8"
-                android:backgroundTint="#4A252C"
-                android:contentDescription="Reset phone lyric timing offset"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:textAllCaps="false"
-                android:minWidth="0dp"
-                android:padding="0dp"
-                android:enabled="false"
-                android:alpha="0.35"
-                style="?attr/materialButtonOutlinedStyle" />
-        </LinearLayout>
-
         <!-- Android Auto section: every row here calibrates the connected
              head unit, so the whole section hides while no car is connected. -->
         <LinearLayout
@@ -565,7 +467,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="AA Sync"
+                android:text="Global AA Sync"
                 android:textColor="#CCCCDD"
                 android:textSize="13sp" />
 
@@ -579,7 +481,7 @@
                 android:textSize="12sp"
                 android:gravity="center"
                 android:background="?attr/selectableItemBackgroundBorderless"
-                android:contentDescription="Adjusts Android Auto lyric timing only. This offset is shared with the Android Auto Sync tab and is applied in addition to Phone Sync." />
+                android:contentDescription="Global head-unit timing shift applied on top of the per-lyrics offset, on Android Auto surfaces only. Calibrate here — the head unit never shows this value." />
 
             <View
                 android:layout_width="0dp"
@@ -943,7 +845,7 @@
             style="?attr/materialButtonOutlinedStyle" />
     </FrameLayout>
 
-    <!-- Phone Sync Controls -->
+    <!-- Per-lyrics sync controls (offset belongs to the loaded lyrics) -->
     <LinearLayout
         android:id="@+id/layout_delay"
         android:layout_width="match_parent"

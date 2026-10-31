@@ -15,6 +15,7 @@ import com.autolyrics.util.LyricDisplay
 import com.autolyrics.lyrics.KaraokeTiming
 import com.autolyrics.lyrics.LrcLibClient
 import com.autolyrics.lyrics.LrcParser
+import com.autolyrics.lyrics.sha256Hex
 import com.autolyrics.lyrics.LyricsCache
 import com.autolyrics.lyrics.LyricsProviderCandidate
 import com.autolyrics.lyrics.LyricsProviderResolver
@@ -37,8 +38,11 @@ import com.autolyrics.model.TrackInfo
 import com.autolyrics.util.AlbumColorExtractor
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 
 /**
  * One provider leg of the auto race: its candidate (null on any outcome),
@@ -128,10 +132,30 @@ class MediaTracker private constructor(context: Context) {
         }
 
     init {
-        lyricsOffsetMs = prefs.getLong("lyrics_offset_ms", 0L)
-        _state.value = _state.value.copy(offsetMs = lyricsOffsetMs)
+        // The global phone offset is retired: sync is per-lyrics now, and a
+        // stale global value has no timing set to belong to — drop it.
+        if (prefs.contains("lyrics_offset_ms")) prefs.edit().remove("lyrics_offset_ms").apply()
         prefs.registerOnSharedPreferenceChangeListener(preferenceChangeListener)
         startPreferenceReconciliation()
+        // The offset travels with the LYRICS: whenever the published line
+        // list changes identity (cache hit, race winner, manual apply, track
+        // change), the stored value for that exact timing set takes over.
+        // Keyed on text AND stamps, so identical lyrics replay their tuned
+        // offset and a re-timed payload of the same words starts at zero.
+        scope.launch {
+            _state
+                .map { lyricsOffsetKey(it.lines) }
+                .distinctUntilChanged()
+                .collect { key -> applyLyricsOffsetKey(key) }
+        }
+    }
+
+    /** Applies the stored offset for [key] ("" = nothing loaded → 0). */
+    private fun applyLyricsOffsetKey(key: String) {
+        lyricsOffsetKey = key.ifEmpty { null }
+        lyricsOffsetMs = lyricsOffsetKey?.let { prefs.getLong(LYRICS_OFFSET_PREFIX + it, 0L) } ?: 0L
+        _state.update { it.copy(offsetMs = lyricsOffsetMs) }
+        updateCurrentPosition()
     }
 
     /**
@@ -226,18 +250,22 @@ class MediaTracker private constructor(context: Context) {
         }
     }
 
+    /**
+     * Offset store for the CURRENTLY LOADED lyrics (key = [lyricsOffsetKey],
+     * derived from the published line list). No key — nothing is loaded —
+     * means every write is a no-op: a pending value would silently poison
+     * the next timing set. Zero values are REMOVED, not stored.
+     */
+    @Volatile private var lyricsOffsetKey: String? = null
+
     fun adjustOffset(deltaMs: Long) {
-        lyricsOffsetMs += deltaMs
-        prefs.edit().putLong("lyrics_offset_ms", lyricsOffsetMs).apply()
-        _state.value = _state.value.copy(offsetMs = lyricsOffsetMs)
-        updateCurrentPosition()
+        val key = lyricsOffsetKey ?: return
+        setOffset(prefs.getLong(LYRICS_OFFSET_PREFIX + key, 0L) + deltaMs)
     }
 
     fun resetOffset() {
-        lyricsOffsetMs = 0L
-        prefs.edit().putLong("lyrics_offset_ms", 0L).apply()
-        _state.value = _state.value.copy(offsetMs = lyricsOffsetMs)
-        updateCurrentPosition()
+        if (lyricsOffsetKey == null) return
+        setOffset(0L)
     }
 
     fun resumePlayback() {
@@ -245,9 +273,12 @@ class MediaTracker private constructor(context: Context) {
     }
 
     fun setOffset(ms: Long) {
+        val key = lyricsOffsetKey ?: return
         lyricsOffsetMs = ms
-        prefs.edit().putLong("lyrics_offset_ms", ms).apply()
-        _state.value = _state.value.copy(offsetMs = lyricsOffsetMs)
+        val pref = LYRICS_OFFSET_PREFIX + key
+        if (ms == 0L) prefs.edit().remove(pref).apply()
+        else prefs.edit().putLong(pref, ms).apply()
+        _state.update { it.copy(offsetMs = ms) }
         updateCurrentPosition()
     }
 
@@ -1328,6 +1359,9 @@ class MediaTracker private constructor(context: Context) {
         private const val PROVIDER_RESOLVER_TAG = "ProviderResolver"
         private const val TRANSLATION_ENABLED_KEY = "translation_enabled"
         private const val AA_KARAOKE_ENABLED_KEY = "aa_karaoke_enabled"
+
+        /** Per-lyrics sync offsets: pref key = prefix + lyrics-content key. */
+        private const val LYRICS_OFFSET_PREFIX = "lyrics_offset:"
         private const val PREFERENCE_RECONCILE_MS = 500L
 
         @Volatile
@@ -1344,3 +1378,13 @@ class MediaTracker private constructor(context: Context) {
         }
     }
 }
+
+/**
+ * Identity of a lyric timing set for per-lyrics offset storage: the
+ * published line list's TEXT AND STAMPS. Same words re-timed by another
+ * provider (or re-applied Manual Search text) is a different key and starts
+ * at zero; the identical cached list replays its tuned value.
+ */
+internal fun lyricsOffsetKey(lines: List<LyricLine>): String =
+    if (lines.isEmpty()) ""
+    else sha256Hex(lines.joinToString("\n") { "${it.timeMs}|${it.text}" }).take(16)

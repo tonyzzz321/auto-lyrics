@@ -7,7 +7,8 @@ Auto Lyrics is an Android app that follows the active media session and displays
 - **Android Auto lyrics** — current line marked with `▶` and pinned to the first row, plus a Karaoke tab with a two-line KTV-style board (left/right justified, each side advancing when its line finishes) — word-timed and synced lyrics ride their timing, not-synced lyrics ride a position estimate. Translations publish when the run finishes: no blank translation lines mid-load.
 - **Lyrics / Sync / More browse tabs** — lyrics are the primary view, timing adjustment is kept separate, and detailed track/provider information lives under More.
 - **Fixed 5-row lyric window** — the Lyrics tab reads forward from the pinned current line with a translation line stacked under each lyric line; near the song end it simply shows fewer rows.
-- **Fixed 3-row Sync preview** — current line plus surrounding context while adjusting the Android Auto offset.
+- **Per-lyrics sync** — the fine-offset presets and **Tap to Sync** under the lyrics tune the LOADED LYRICS (stored against the exact timing set, not the song or the provider): replay the same lyrics and the value rides along, get different timing and it starts fresh at zero.
+- **Fixed 3-row Sync preview** — current line plus surrounding context while adjusting the per-lyrics offset on the head unit.
 - **Now-playing lyric line** — the Android Auto now-playing card carries the current lyric line and falls back to a plain title/artist player card during intro, instrumentals, outro, and lyric failures — with a 4→1 music-glyph countdown into each coming lyric during the final seconds of any gap.
 - **Multi-provider resolution** — LRCLIB, Musixmatch, configured PetitLyrics, and SyncLRC candidates are compared using metadata match, lyric quality, and source confidence.
 - **Karaoke-aware selection** — normal mode remains accuracy-first; Karaoke mode may prefer a real WORD_SYNC candidate when its recording match and payload quality are near-equivalent to the normal winner.
@@ -160,11 +161,11 @@ A Chinese-KTV-style two-row board for line-timed lyrics, under the same song-inf
 
 ### Sync
 
-The secondary tab for Android Auto timing correction. It keeps a forward-reading 3-row lyric preview (line being sung first; countdown glyphs during intros/instrumentals) and provides `−50 ms` / `+50 ms` controls. This offset is Android-Auto-specific and is separate from the phone/global lyric offset. With no lyrics found it shows only the offset row plus a "No lyrics found for this track" row.
+The secondary tab for timing correction on the head unit. It keeps a forward-reading 3-row lyric preview (line being sung first; countdown glyphs during intros/instrumentals) and shows the per-lyrics offset (`Offset: ±Nms · this lyrics`) with `−100 ms` / `+100 ms` controls — the same value the phone's main-view bar edits. The global **Global AA Sync** delay is edited only from the phone's Android Auto settings section and is never shown here. With no lyrics found the tab shows just a "No lyrics found for this track" row.
 
 ### More
 
-Shows detailed information such as title, artist, album, provider, synchronization state, detected language, duration, and Android Auto offset.
+Shows detailed information such as title, artist, album, provider, synchronization state, detected language, and duration.
 
 ## How Lyrics Are Resolved
 
@@ -275,7 +276,7 @@ adb logcat -s Musixmatch:D SyncLRC:D ProviderResolver:D PetitLyrics:D
 - Lyrics availability depends on upstream providers; not every recording has usable synchronized or Enhanced-LRC lyrics.
 - Musixmatch and PetitLyrics integrations use unofficial/internal API surfaces; SyncLRC is a third-party public aggregation service. Any of them can change independently of Auto Lyrics.
 - Media-session metadata quality varies by player. Auto Lyrics includes heuristics for common metadata problems, but unusual formats can still miss or mismatch.
-- Audio-output latency can differ between the phone speaker, Bluetooth, codecs, head units, and Android Auto. Use the existing phone/global or AA-specific offset controls when an output path has a stable delay. Auto Lyrics does **not** apply a fixed provider-wide pre-offset without evidence that a timing source itself is systematically biased across playback paths.
+- Audio-output latency can differ between the phone speaker, Bluetooth, codecs, head units, and Android Auto. Use the per-lyrics offset (phone bar / AA Sync tab) for per-timing-set correction and the global **Global AA Sync** delay for a stable head-unit output path; phone-speaker and Bluetooth delays ride the per-lyrics value. Auto Lyrics does **not** apply a fixed provider-wide pre-offset without evidence that a timing source itself is systematically biased across playback paths.
 - Android Auto browse-tree updates remain throttled, so visual Karaoke updates can be coarser than the phone/Performance UI even though future words are no longer intentionally highlighted early.
 - Fine source timing is display-grouped heuristically. Japanese segmentation in particular is intended to be more readable than character-by-character highlighting, not to be a full morphological analysis engine.
 - PetitLyrics client identifiers embedded in a distributed Android APK are extractable by design; do not use values that rely on client-side secrecy.

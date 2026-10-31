@@ -31,7 +31,9 @@ class AaSequenceSimTest {
             if (last < 0) lines.size else last + 1
         }
         val rows = SungLine.virtualRows(lines, count)
-        val base = maxOf(0, SungLine.firstRealIndex(lines))
+        // Mirrors the service: sequence index owning the top slot; -1 when
+        // an intro countdown exists (it takes the top row itself).
+        val base = if (SungLine.introCountdown(lines, count)) -1 else 0
         private val hasReal = SungLine.firstRealIndex(lines) >= 0
         private val duration = (lines.maxOfOrNull { it.timeMs } ?: 0L) + 40_000
 
@@ -138,10 +140,10 @@ class AaSequenceSimTest {
                 if (covered.contains(i)) continue
                 val v = rows.indexOfFirst { !it.isGap && it.realIndex == i }
                 val (top, bottom) = AaKaraokeRows.pairFor(v, rows.size, base)
-                if ((v - base) % 2 == 0) {
-                    assertEquals("$tag: line $i rides the bottom row", v, bottom)
-                } else {
+                if (((v - base) % 2 + 2) % 2 == 0) {
                     assertEquals("$tag: line $i rides the top row", v, top)
+                } else {
+                    assertEquals("$tag: line $i rides the bottom row", v, bottom)
                 }
             }
         }
@@ -448,8 +450,9 @@ class AaSequenceSimTest {
         )
         assertEquals(-1, s.at(5_000))
         assertEquals(-1, s.at(19_000))
-        // Board anchors on the first REAL line (V idx 2, even offset 0 =
-        // bottom row), exactly where the intro preview places it.
+        // The 20 s intro countdown EXISTS, so it owns the top slot and the
+        // first real lyric is sung from the BOTTOM - exactly where the
+        // intro preview places it.
         val (_, bottom) = AaKaraokeRows.pairFor(s.at(20_050), s.rows.size, s.base)
         assertEquals(s.at(20_050), bottom)
     }

@@ -47,6 +47,23 @@ object AaHost {
         prefs.edit().putInt(key, value).apply()
     }
 
+    /** Global default edge (the value a car without its own calibration
+     *  inherits on sight). */
+    fun globalEdge(prefs: SharedPreferences): Int = prefs.getInt(EDGE_PREF_KEY, 0)
+
+    /**
+     * Reset means "no nudge anywhere": a per-car zero would otherwise sit
+     * beside a non-zero global and resurrect the old edge whenever the car
+     * identity drops (service restart, reconnect with no hints), because
+     * the car key only exists per fingerprint and the global is the
+     * fallback for every un-keyed read.
+     */
+    fun resetEdge(prefs: SharedPreferences, fingerprint: String?) {
+        val editor = prefs.edit().putInt(EDGE_PREF_KEY, 0)
+        if (fingerprint != null) editor.putInt("$EDGE_PREF_KEY:$fingerprint", 0)
+        editor.apply()
+    }
+
     /** What the settings row is calibrating, e.g. "this car (9f2c1a)". */
     fun describe(): String {
         val fingerprint = fingerprint

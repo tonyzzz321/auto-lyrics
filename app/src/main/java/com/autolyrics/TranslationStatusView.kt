@@ -644,8 +644,8 @@ class TranslationStatusView @JvmOverloads constructor(
                 view,
                 index + 1,
                 LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                    topMargin = view.dp(2)
-                    bottomMargin = view.dp(4)
+                    topMargin = view.dp(8)
+                    bottomMargin = 0
                 }
             )
         }

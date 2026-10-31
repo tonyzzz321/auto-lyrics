@@ -197,14 +197,16 @@ For a functional smoke test, install the release APK and verify:
 6. PetitLyrics works on a known supported track when release credentials are present.
 7. Karaoke mode can select a real WORD_SYNC candidate when it is near-equivalent to the standard winner.
 8. SyncLRC is queried on every track change; token-bearing karaoke wins, its synced/plain tiers compete as Synced/Not-synced candidates, and a kana/alias track resolves through the iTunes catalog ladder when the exact `/lyrics` name match fails.
-9. Manual Search opens timed-rows-only (the **Include unsynced results** checkbox reveals `Not synced` rows), never lists an all-symbol junk row, and an applied pick survives reload (permanent cache overwrite + forced retranslation).
-9. Android Auto shows `Lyrics | Karaoke | Sync | More`.
-10. Current lyrics display the `▶` marker.
-11. Lyrics tab is a forward 5-row window with the sung line pinned first, and each row's translation line starts at the same x as its lyric line.
-12. Sync remains a fixed 3-row lyric preview.
-14. ±50 ms AA offset controls still update the view.
-15. An instrumental stretch renders as the countdown row (one `♪` glyph per remaining second, max 4) in the Lyrics, Karaoke, and Sync tabs and on the now-playing card — never as static symbol rows.
-16. A track whose best upload is music-symbol-only resolves to the next provider's real lyrics (or reports not-found); it is never cached as empty 'found' lyrics. A track with no artist tag shows `Unknown Artist` on the AA now-playing card.
+9. Manual Search opens timed-rows-only (the **Include unsynced results** checkbox reveals `Not synced` rows), never lists an all-symbol junk row, surfaces iTunes-catalog rows for an alias (kana) query, and an applied pick survives reload (permanent cache overwrite + forced retranslation).
+10. Android Auto shows `Lyrics | Karaoke | Sync | More`; the header playback time ticks every second, including while lyrics or translations are still loading.
+11. Current lyrics display the `▶` marker.
+12. Lyrics tab is a forward 5-row window with the sung line pinned first, and each row's translation line starts at the same x as its lyric line.
+13. Karaoke tab shows the two-row board for a Not-synced track too (estimated pair, `▶` on the estimated row, bottom row right-justified).
+14. While a translation runs, browse rows stay single-line (no blank translation lines, no jumping); the two-line grid appears once the run completes and holds height after that.
+15. Sync remains a fixed 3-row lyric preview; ±50 ms AA offset controls still update the view.
+16. The Karaoke edge Reset zeroes both the connected car and the global default — the old value must not return after a reinstall or reconnect.
+17. An instrumental stretch renders as the countdown row (one `♪` glyph per remaining second, max 4) in the Lyrics, Karaoke, and Sync tabs and on the now-playing card — never as static symbol rows.
+18. A track whose best upload is music-symbol-only resolves to the next provider's real lyrics (or reports not-found); it is never cached as empty 'found' lyrics. A track with no artist tag shows `Unknown Artist` on the AA now-playing card.
 
 ## Local release-like build
 

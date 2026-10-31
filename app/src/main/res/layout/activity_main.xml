@@ -187,7 +187,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Phone UI"
+            android:text="Phone"
             android:textColor="#8888AA"
             android:textSize="12sp"
             android:fontFamily="sans-serif-medium"
@@ -204,9 +204,8 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="Size"
-                android:textColor="#8888AA"
-                android:textSize="12sp"
-                android:fontFamily="sans-serif-medium" />
+                android:textColor="#CCCCDD"
+                android:textSize="13sp" />
 
             <com.autolyrics.ui.SettingInfoView
                 android:id="@+id/info_font_size"
@@ -279,9 +278,8 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="Font"
-                android:textColor="#8888AA"
-                android:textSize="12sp"
-                android:fontFamily="sans-serif-medium" />
+                android:textColor="#CCCCDD"
+                android:textSize="13sp" />
 
             <com.autolyrics.ui.SettingInfoView
                 android:id="@+id/info_font_family"
@@ -305,7 +303,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="34dp"
                 android:text="Sans"
-                android:textSize="11sp"
+                android:textSize="13sp"
                 android:textColor="#CCCCDD"
                 android:backgroundTint="#3A3A5E"
                 android:insetTop="0dp"
@@ -321,7 +319,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="34dp"
                 android:text="Serif"
-                android:textSize="11sp"
+                android:textSize="13sp"
                 android:textColor="#CCCCDD"
                 android:backgroundTint="#2A2A3E"
                 android:insetTop="0dp"
@@ -338,7 +336,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="34dp"
                 android:text="Mono"
-                android:textSize="11sp"
+                android:textSize="13sp"
                 android:textColor="#CCCCDD"
                 android:backgroundTint="#2A2A3E"
                 android:insetTop="0dp"
@@ -355,7 +353,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="34dp"
                 android:text="Cursive"
-                android:textSize="11sp"
+                android:textSize="13sp"
                 android:textColor="#CCCCDD"
                 android:backgroundTint="#2A2A3E"
                 android:insetTop="0dp"
@@ -368,124 +366,13 @@
                 style="?attr/materialButtonOutlinedStyle" />
         </LinearLayout>
 
-        <!-- Android Auto section divider -->
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="1dp"
-            android:background="#2A2A3A"
-            android:layout_marginTop="12dp"
-            android:layout_marginBottom="8dp" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Lyrics"
-            android:textColor="#8888AA"
-            android:textSize="12sp"
-            android:fontFamily="sans-serif-medium"
-            android:layout_marginBottom="8dp" />
-
-        <!-- AA Karaoke toggle -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Karaoke Mode"
-                android:textColor="#CCCCDD"
-                android:textSize="13sp" />
-
-            <com.autolyrics.ui.SettingInfoView
-                android:id="@+id/info_aa_karaoke"
-                android:layout_width="22dp"
-                android:layout_height="22dp"
-                android:layout_marginStart="4dp"
-                android:text="ⓘ"
-                android:textColor="#777792"
-                android:textSize="12sp"
-                android:gravity="center"
-                android:background="?attr/selectableItemBackgroundBorderless"
-                android:contentDescription="Word-by-word highlighting on the phone, fullscreen, and Android Auto lyrics when word timing is available." />
-
-            <View
-                android:layout_width="0dp"
-                android:layout_height="1dp"
-                android:layout_weight="1" />
-
-            <androidx.appcompat.widget.SwitchCompat
-                android:id="@+id/switch_aa_karaoke"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:minHeight="0dp" />
-        </LinearLayout>
-
-        <!-- Translation toggle -->
+        <!-- Phone Sync offset row -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center_vertical"
             android:layout_marginTop="8dp">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Translate Lyrics"
-                android:textColor="#CCCCDD"
-                android:textSize="13sp" />
-
-            <com.autolyrics.ui.SettingInfoView
-                android:id="@+id/info_translation"
-                android:layout_width="22dp"
-                android:layout_height="22dp"
-                android:layout_marginStart="4dp"
-                android:text="ⓘ"
-                android:textColor="#777792"
-                android:textSize="12sp"
-                android:gravity="center"
-                android:background="?attr/selectableItemBackgroundBorderless"
-                android:contentDescription="Enables lyric translation when lyrics are loaded. Translated lines appear in both Phone UI and Android Auto." />
-
-            <View
-                android:layout_width="0dp"
-                android:layout_height="1dp"
-                android:layout_weight="1" />
-
-            <androidx.appcompat.widget.SwitchCompat
-                android:id="@+id/switch_translation"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:minHeight="0dp" />
-        </LinearLayout>
-
-        <!-- Sync section divider -->
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="1dp"
-            android:background="#2A2A3A"
-            android:layout_marginTop="12dp"
-            android:layout_marginBottom="8dp" />
-
-        <!-- Sync section title -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Sync"
-            android:textColor="#8888AA"
-            android:textSize="12sp"
-            android:fontFamily="sans-serif-medium"
-            android:layout_marginBottom="8dp" />
-
-        <!-- Phone Sync offset row -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical">
 
             <TextView
                 android:layout_width="wrap_content"
@@ -577,13 +464,39 @@
                 style="?attr/materialButtonOutlinedStyle" />
         </LinearLayout>
 
+        <!-- Android Auto section: every row here calibrates the connected
+             head unit, so the whole section hides while no car is connected. -->
+        <LinearLayout
+            android:id="@+id/section_aa"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+        <!-- Android Auto section divider -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#2A2A3A"
+            android:layout_marginTop="12dp"
+            android:layout_marginBottom="8dp" />
+
+        <!-- Android Auto section title -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Android Auto"
+            android:textColor="#8888AA"
+            android:textSize="12sp"
+            android:fontFamily="sans-serif-medium"
+            android:layout_marginBottom="8dp" />
+
         <!-- AA Sync offset row -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center_vertical"
-            android:layout_marginTop="6dp">
+            android:layout_marginTop="8dp">
 
             <TextView
                 android:layout_width="wrap_content"
@@ -683,7 +596,7 @@
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center_vertical"
-            android:layout_marginTop="6dp"
+            android:layout_marginTop="8dp"
             android:visibility="gone">
 
             <TextView
@@ -772,6 +685,103 @@
                 android:alpha="0.35"
                 style="?attr/materialButtonOutlinedStyle" />
         </LinearLayout>
+        </LinearLayout>
+
+        <!-- Lyrics section divider -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#2A2A3A"
+            android:layout_marginTop="12dp"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Lyrics"
+            android:textColor="#8888AA"
+            android:textSize="12sp"
+            android:fontFamily="sans-serif-medium"
+            android:layout_marginBottom="8dp" />
+
+        <!-- AA Karaoke toggle -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="8dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Karaoke Mode"
+                android:textColor="#CCCCDD"
+                android:textSize="13sp" />
+
+            <com.autolyrics.ui.SettingInfoView
+                android:id="@+id/info_aa_karaoke"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:layout_marginStart="4dp"
+                android:text="ⓘ"
+                android:textColor="#777792"
+                android:textSize="12sp"
+                android:gravity="center"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Word-by-word highlighting on the phone, fullscreen, and Android Auto lyrics when word timing is available." />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <androidx.appcompat.widget.SwitchCompat
+                android:id="@+id/switch_aa_karaoke"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minHeight="0dp" />
+        </LinearLayout>
+
+        <!-- Translation toggle -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="8dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Translate Lyrics"
+                android:textColor="#CCCCDD"
+                android:textSize="13sp" />
+
+            <com.autolyrics.ui.SettingInfoView
+                android:id="@+id/info_translation"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:layout_marginStart="4dp"
+                android:text="ⓘ"
+                android:textColor="#777792"
+                android:textSize="12sp"
+                android:gravity="center"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Enables lyric translation when lyrics are loaded. Translated lines appear in both Phone UI and Android Auto." />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <androidx.appcompat.widget.SwitchCompat
+                android:id="@+id/switch_translation"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minHeight="0dp" />
+        </LinearLayout>
+
     </LinearLayout>
 
     <View

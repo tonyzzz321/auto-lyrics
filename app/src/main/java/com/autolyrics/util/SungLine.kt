@@ -72,6 +72,20 @@ internal object SungLine {
     fun firstRealIndex(lines: List<LyricLine>): Int =
         lines.indexOfFirst { !LyricDisplay.isSymbolText(it.text) }
 
+    /**
+     * True when the song opens with an instrumental stretch long enough to
+     * count down ([GAP_MIN_MS] or more before the first real lyric): the
+     * intro countdown then OCCUPIES A ROW SLOT like a lyric (the board's
+     * top row), pushing the first real lyric to the bottom row. Songs that
+     * start on a lyric (or with only a flourish) have no countdown row and
+     * the first lyric takes the top row.
+     */
+    fun introCountdown(lines: List<LyricLine>, count: Int): Boolean {
+        val fr = firstRealIndex(lines)
+        return fr in 0 until minOf(count, lines.size) &&
+            lines[fr].timeMs >= GAP_MIN_MS
+    }
+
     /** Last line whose time has passed, or -1 before the first line. */
     fun rawIndex(lines: List<LyricLine>, posMs: Long): Int {
         var idx = -1

@@ -15,30 +15,27 @@ internal object AaKaraokeRows {
      * Pair of line indices to display for the active line index. The side
      * holding the active line shows it; the other side already previews the
      * next line on its own track (active + 1). Even line indices ride the
-     * bottom row, odd the top, so previewed lines never change rows when
-     * they start being sung. Indices beyond the song end
-     * with -1 so the caller can render a placeholder instead of a seek target.
+     * top row, odd the bottom (the board starts on top), so previewed lines
+     * never change rows when they start being sung. Indices beyond the song
+     * end with -1 so the caller can render a placeholder instead of a seek
+     * target.
      */
     fun pairFor(activeIdx: Int, lineCount: Int, base: Int = 0): Pair<Int, Int> {
         if (activeIdx >= lineCount) return -1 to -1
-        if (activeIdx < 0) {
-            // Instrumental intro before the first sung line: the sung side
-            // is the virtual (-1) slot (rendered as the countdown) and the
-            // preview side already shows the line about to start ON THE
-            // ROW IT WILL BE SUNG FROM (the bottom, offset 0 from base).
-            return -1 to if (base in 0 until lineCount) base else -1
-        }
-        // Lines at an EVEN OFFSET from base ride the BOTTOM row: the
-        // instrumental-intro preview already shows the base line on the
-        // bottom, and a previewed line must sit on the row it will be
-        // sung from, or it visibly hops rows the moment it starts. The
-        // base is the song's first REAL lyric, so leading music-tag lines
-        // never shift the board's parity.
-        val even = (activeIdx - base) % 2 == 0
-        val top = if (even) activeIdx + 1 else activeIdx
-        val bottom = if (even) activeIdx else activeIdx + 1
-        return (if (top < lineCount) top else -1) to
-            (if (bottom < lineCount) bottom else -1)
+        // Rows at an EVEN OFFSET from base ride the TOP row (user-settled
+        // board model). base is the sequence index that owns the top slot:
+        // normally 0 (first lyric on top), but -1 while an intro countdown
+        // EXISTS — the countdown is then a full member of the sequence: it
+        // takes the top row and the first real lyric previews and is sung
+        // from the BOTTOM. A previewed line always sits on the row it will
+        // be sung from, so nothing hops rows when it starts. The active -1
+        // slot is the countdown itself: the general formula parks it on
+        // even offsets and opposite the preview on odd ones.
+        val even = ((activeIdx - base) % 2 + 2) % 2 == 0
+        val top = if (even) activeIdx else activeIdx + 1
+        val bottom = if (even) activeIdx + 1 else activeIdx
+        return (if (top in 0 until lineCount) top else -1) to
+            (if (bottom in 0 until lineCount) bottom else -1)
     }
 
     /**

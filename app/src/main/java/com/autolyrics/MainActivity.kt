@@ -263,6 +263,11 @@ class MainActivity : AppCompatActivity() {
         androidx.car.app.connection.CarConnection(this).type.observeForever { type ->
             val connected =
                 type != androidx.car.app.connection.CarConnection.CONNECTION_TYPE_NOT_CONNECTED
+            // The whole Android Auto section (AA Sync + Karaoke edge) is
+            // head-unit calibration, so it exists only while a car owns the
+            // connection.
+            findViewById<View>(R.id.section_aa).visibility =
+                if (connected) View.VISIBLE else View.GONE
             findViewById<View>(R.id.row_karaoke_edge).visibility =
                 if (connected) View.VISIBLE else View.GONE
             updateKaraokeEdgeDisplay()
@@ -483,13 +488,20 @@ class MainActivity : AppCompatActivity() {
 
     private fun resetKaraokeEdge() {
         val previous = com.autolyrics.auto.AaHost.edge(prefs)
-        if (previous == 0) return
+        val previousGlobal = com.autolyrics.auto.AaHost.globalEdge(prefs)
+        if (previous == 0 && previousGlobal == 0) return
 
         dismissUndoSnackbar()
-        com.autolyrics.auto.AaHost.putEdge(prefs, 0)
+        // Zero BOTH scopes: the per-car key only exists per fingerprint, and
+        // every un-keyed read (identity dropped by a service restart or a
+        // hint-less reconnect) falls back to the global default — a stale
+        // global would silently restore the old edge after the reset.
+        com.autolyrics.auto.AaHost.resetEdge(prefs, com.autolyrics.auto.AaHost.fingerprint)
         updateKaraokeEdgeDisplay()
         showUndoSnackbar("Karaoke edge reset") {
             com.autolyrics.auto.AaHost.putEdge(prefs, previous)
+            prefs.edit().putInt(com.autolyrics.auto.AaHost.EDGE_PREF_KEY, previousGlobal)
+                .apply()
             updateKaraokeEdgeDisplay()
         }
     }

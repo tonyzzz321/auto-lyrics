@@ -7,42 +7,52 @@ import org.junit.Test
 class AaKaraokeRowsTest {
 
     @Test
-    fun `active even line keeps top and previews odd line below`() {
-        assertEquals(1 to 0, AaKaraokeRows.pairFor(0, 10))
-        assertEquals(5 to 4, AaKaraokeRows.pairFor(4, 10))
+    fun `board starts on top - even active line rides the top row`() {
+        assertEquals(0 to 1, AaKaraokeRows.pairFor(0, 10))
+        assertEquals(4 to 5, AaKaraokeRows.pairFor(4, 10))
     }
 
     @Test
     fun `even active index on top previews the odd line below`() {
-        assertEquals(3 to 2, AaKaraokeRows.pairFor(2, 10))
+        assertEquals(2 to 3, AaKaraokeRows.pairFor(2, 10))
     }
 
     @Test
-    fun `odd active index sits on top side`() {
+    fun `odd active index sits on the bottom side`() {
         val (top, bottom) = AaKaraokeRows.pairFor(3, 10)
-        assertEquals(3, top)
-        assertEquals(4, bottom)
+        assertEquals(4, top)
+        assertEquals(3, bottom)
     }
 
     @Test
-    fun `beyond last line yields empty placeholders`() {
-        assertEquals(-1 to 0, AaKaraokeRows.pairFor(-1, 10))
+    fun `intro previews on top with the countdown slot below`() {
+        assertEquals(0 to -1, AaKaraokeRows.pairFor(-1, 10))
         assertEquals(-1 to -1, AaKaraokeRows.pairFor(-1, 0))
         assertEquals(-1 to -1, AaKaraokeRows.pairFor(10, 10))
     }
 
     @Test
-    fun `song ending on an odd line leaves the bottom preview out of range`() {
-        val (top, bottom) = AaKaraokeRows.pairFor(9, 10)
-        assertEquals(9, top)
-        assertEquals(-1, bottom)
+    fun `existing intro countdown owns the top row and lyrics ride bottom`() {
+        // base = -1: the countdown occupies the sequence's top slot, so
+        // the intro shows the countdown ON TOP with the first lyric
+        // previewed (and later sung) on the bottom.
+        assertEquals(-1 to 0, AaKaraokeRows.pairFor(-1, 10, base = -1))
+        // First real lyric (idx 0, odd offset) rides the bottom row.
+        assertEquals(1 to 0, AaKaraokeRows.pairFor(0, 10, base = -1))
     }
 
     @Test
-    fun `song ending on an even line leaves the top preview out of range`() {
-        val (top, bottom) = AaKaraokeRows.pairFor(8, 9)
+    fun `song ending on an odd line leaves the top preview out of range`() {
+        val (top, bottom) = AaKaraokeRows.pairFor(9, 10)
         assertEquals(-1, top)
-        assertEquals(8, bottom)
+        assertEquals(9, bottom)
+    }
+
+    @Test
+    fun `song ending on an even line leaves the bottom preview out of range`() {
+        val (top, bottom) = AaKaraokeRows.pairFor(8, 9)
+        assertEquals(8, top)
+        assertEquals(-1, bottom)
     }
 
     @Test
@@ -170,11 +180,12 @@ class AaKaraokeRowsTest {
 
     @Test
     fun `parity anchors on the first real line`() {
-        // With a leading music-tag line the first REAL line still rides the
-        // bottom row, and the intro previews it there.
-        assertEquals(2 to 1, AaKaraokeRows.pairFor(1, 4, base = 1))
-        assertEquals(-1 to 1, AaKaraokeRows.pairFor(-1, 4, base = 1))
-        assertEquals(-1 to 0, AaKaraokeRows.pairFor(-1, 4))
+        // Parity is SEQUENCE space: with an intro countdown (base -1) the
+        // first real lyric rides the bottom; without one it rides the top.
+        assertEquals(-1 to 0, AaKaraokeRows.pairFor(-1, 4, base = -1))
+        assertEquals(1 to 0, AaKaraokeRows.pairFor(0, 4, base = -1))
+        assertEquals(0 to 1, AaKaraokeRows.pairFor(0, 4))
+        assertEquals(0 to -1, AaKaraokeRows.pairFor(-1, 4))
     }
     @Test
     fun truncateKeepsShortTextWhole() {

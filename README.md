@@ -4,7 +4,7 @@ Auto Lyrics is an Android app that follows the active media session and displays
 
 ## Features
 
-- **Android Auto lyrics** — current line marked with `▶` and pinned to the first row, plus a Karaoke tab with a two-line KTV-style board (left/right justified, each side advancing when its line finishes).
+- **Android Auto lyrics** — current line marked with `▶` and pinned to the first row, plus a Karaoke tab with a two-line KTV-style board (left/right justified, each side advancing when its line finishes) — word-timed and synced lyrics ride their timing, not-synced lyrics ride a position estimate. Translations publish when the run finishes: no blank translation lines mid-load.
 - **Lyrics / Sync / More browse tabs** — lyrics are the primary view, timing adjustment is kept separate, and detailed track/provider information lives under More.
 - **Fixed 5-row lyric window** — the Lyrics tab reads forward from the pinned current line with a translation line stacked under each lyric line; near the song end it simply shows fewer rows.
 - **Fixed 3-row Sync preview** — current line plus surrounding context while adjusting the Android Auto offset.

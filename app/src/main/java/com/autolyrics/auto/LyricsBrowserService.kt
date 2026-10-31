@@ -61,7 +61,9 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
                     aaOffsetMs = sp.getLong(key, 0L)
                     forceRefresh()
                 }
-                TranslationLanguages.TARGET_LANGUAGE_PREF_KEY -> {
+                TranslationLanguages.TARGET_LANGUAGE_PREF_KEY,
+                "translation_enabled",
+                "aa_karaoke_enabled" -> {
                     forceRefresh()
                 }
             }

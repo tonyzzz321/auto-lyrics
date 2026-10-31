@@ -24,6 +24,43 @@ object LrcParser {
 
     fun cleanSpacing(text: String): String = CJK_SPACE.replace(text, "")
 
+    private val PUNCT_TYPES = setOf(
+        Character.DASH_PUNCTUATION.toInt(),
+        Character.START_PUNCTUATION.toInt(),
+        Character.END_PUNCTUATION.toInt(),
+        Character.CONNECTOR_PUNCTUATION.toInt(),
+        Character.OTHER_PUNCTUATION.toInt(),
+        Character.INITIAL_QUOTE_PUNCTUATION.toInt(),
+        Character.FINAL_QUOTE_PUNCTUATION.toInt()
+    )
+
+    private fun isPunctuation(c: Char): Boolean = Character.getType(c) in PUNCT_TYPES
+
+    /**
+     * Punctuation is never sung, so a standalone punctuation token makes the
+     * highlight step onto the symbol while the voice is elsewhere. Collapse
+     * such tokens into the preceding token (leading ones ride the token that
+     * follows). Concatenation is preserved, so display text and highlight
+     * spans stay character-exact.
+     */
+    internal fun collapsePunctuation(words: List<LyricWord>): List<LyricWord> {
+        if (words.size < 2) return words
+        val out = ArrayList<LyricWord>(words.size)
+        for (word in words) {
+            val core = word.text.trim()
+            if (out.isNotEmpty() && core.isNotEmpty() && core.all(::isPunctuation)) {
+                out[out.lastIndex] = out.last().let { it.copy(text = it.text + word.text) }
+            } else {
+                out.add(word)
+            }
+        }
+        while (out.size >= 2 && out[0].text.isNotBlank() && out[0].text.trim().all(::isPunctuation)) {
+            val head = out.removeAt(0)
+            out[0] = out[0].copy(text = head.text + out[0].text)
+        }
+        return out
+    }
+
     fun parse(lrc: String): List<LyricLine> {
         return lrc.lines()
             .flatMap { line -> parseLine(line) }
@@ -102,12 +139,27 @@ object LrcParser {
             )
         }
 
+        // Word tags are not reliably chronological inside one line; unsorted
+        // tokens freeze any renderer that scans forward and stops at the first
+        // future token (the phone sweep does). Time order is sung order.
+        val timed = rawWords.sortedBy { it.timeMs }
+
+        // Text before the first word tag is spoken intros the timing never
+        // covers; attach it to the first token so it renders and lights with
+        // the first syllable instead of vanishing from the display text.
+        val prefix = wordMatches.firstOrNull()?.let { remaining.substring(0, it.range.first) }.orEmpty()
+        val spaced0 = if (prefix.isNotBlank() && timed.isNotEmpty()) {
+            listOf(timed.first().copy(text = prefix + timed.first().text)) + timed.drop(1)
+        } else {
+            timed
+        }
+
         // Per-character karaoke uploads put each CJK glyph in its own token
         // with a trailing space; the space is flanked by CJK across the token
         // boundary, invisible to the raw-line pass above. Drop it from the
         // preceding token so display text and word spans stay character-exact.
-        val words = rawWords.mapIndexed { index, word ->
-            val next = rawWords.getOrNull(index + 1)?.text?.firstOrNull { !it.isWhitespace() }
+        val spaced = spaced0.mapIndexed { index, word ->
+            val next = spaced0.getOrNull(index + 1)?.text?.firstOrNull { !it.isWhitespace() }
             if (next != null && isCjk(next) &&
                 word.text.isNotEmpty() && word.text.last().isWhitespace() &&
                 isCjk(word.text.last { !it.isWhitespace() })
@@ -117,6 +169,7 @@ object LrcParser {
                 word
             }
         }
+        val words = collapsePunctuation(spaced)
 
         // Display text is exactly the concatenation of word tokens so word
         // highlight spans always map onto it.
@@ -126,9 +179,18 @@ object LrcParser {
             WORD_TIMESTAMP.replace(remaining, "")
         }
 
+        // Repeated line tags mean the same line is sung again later; word tags
+        // carry the first instance's absolute times, so each repeat needs its
+        // own shift or the highlight renders fully lit from the first word.
+        val anchor = timestamps.firstOrNull() ?: 0L
         return timestamps.map { ts ->
-            if (words.isNotEmpty() && fullText.isNotBlank()) {
-                LyricLine(ts, fullText, words)
+            val instanceWords = if (words.isNotEmpty() && ts != anchor) {
+                words.map { it.copy(timeMs = it.timeMs - anchor + ts) }
+            } else {
+                words
+            }
+            if (instanceWords.isNotEmpty() && fullText.isNotBlank()) {
+                LyricLine(ts, fullText, instanceWords)
             } else {
                 LyricLine(ts, fullText.ifBlank { "♪" })
             }

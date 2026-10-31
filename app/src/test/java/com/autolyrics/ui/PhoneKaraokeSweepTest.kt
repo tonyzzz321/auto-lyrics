@@ -11,7 +11,7 @@ import org.junit.Test
 class PhoneKaraokeSweepTest {
 
     @Test
-    fun japaneseCharacterTokensShareReadableSweepSegment() {
+    fun japaneseCharacterTokensSweepCharacterByCharacter() {
         val text = "君を忘れない"
         val line = LyricLine(
             timeMs = 1_000L,
@@ -23,9 +23,9 @@ class PhoneKaraokeSweepTest {
 
         val segment = PhoneKaraokeSweep.segmentAtPosition(line, 1_750L)
         assertNotNull(segment)
-        assertEquals(2, segment!!.start)
+        assertEquals(5, segment!!.start)
         assertEquals(text.length, segment.end)
-        assertEquals(1_300L, segment.startTimeMs)
+        assertEquals(1_750L, segment.startTimeMs)
     }
 
     @Test
@@ -42,7 +42,7 @@ class PhoneKaraokeSweepTest {
         val first = PhoneKaraokeSweep.segmentAtPosition(line, 1_200L)
         assertNotNull(first)
         assertEquals(0, first!!.start)
-        assertEquals(5, first.end)
+        assertEquals(6, first.end)
 
         val second = PhoneKaraokeSweep.segmentAtPosition(line, 1_700L)
         assertNotNull(second)

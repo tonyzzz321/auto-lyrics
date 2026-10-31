@@ -152,7 +152,7 @@ class LyricsCache(context: Context) {
         }
 
         val keyParts = mutableListOf(
-            "v14",
+            "v16",
             variant.name.lowercase(Locale.ROOT),
             normalizeCacheKeyPart(track.title),
             normalizeCacheKeyPart(track.artist),

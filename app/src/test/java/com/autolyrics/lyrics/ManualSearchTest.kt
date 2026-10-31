@@ -32,7 +32,7 @@ class ManualSearchTest {
         kind = ManualHitKind.SYNCED,
         lines = emptyList(),
         status = LyricsStatus.FOUND,
-        source = "LRCLIB · Manual"
+        source = "LRCLIB"
     )
 
     @Test
@@ -54,7 +54,7 @@ class ManualSearchTest {
         assertEquals(LyricsStatus.FOUND, hits.single().status)
         assertEquals(212, hits.single().durationSec)
         assertEquals(2, hits.single().lines.size)
-        assertEquals("LRCLIB · Synced · Manual", hits.single().source)
+        assertEquals("LRCLIB · Synced", hits.single().source)
     }
 
     @Test
@@ -146,7 +146,7 @@ class ManualSearchTest {
 
         val hit = hits.single()
         assertEquals(ManualHitKind.KARAOKE, hit.kind)
-        assertEquals("LRCLIB · Karaoke · Manual", hit.source)
+        assertEquals("LRCLIB · Karaoke", hit.source)
         assertEquals(listOf("hello ", "world"), hit.lines.single().words.map { it.text })
     }
 
@@ -162,7 +162,7 @@ class ManualSearchTest {
         )!!
         assertEquals(ManualHitKind.KARAOKE, karaoke.kind)
         assertEquals("SyncLRC", karaoke.provider)
-        assertEquals("SyncLRC · Karaoke · Manual", karaoke.source)
+        assertEquals("SyncLRC · Karaoke", karaoke.source)
         assertEquals(199, karaoke.durationSec)
 
         val syncedOnly = ManualSearch.toSyncLrcHit(
@@ -231,5 +231,17 @@ class ManualSearchTest {
             "Plain · LRCLIB · --:-- — ? — ?",
             syncedHit.copy(kind = ManualHitKind.PLAIN, durationSec = null, title = "", artist = "").label
         )
+    }
+
+    @Test
+    fun titleFilterKeepsRelatedTitlesAndDropsForeignOnes() {
+        assert(ManualSearch.titleIsRelevant("Hello (Official Video)", "hello"))
+        assert(ManualSearch.titleIsRelevant("Hello", "Hello (Remastered 2011)"))
+        assert(ManualSearch.titleIsRelevant("Hello World", "hello"))
+        assert(ManualSearch.titleIsRelevant("柠檬", "Lemon 柠檬"))
+        assert(ManualSearch.titleIsRelevant("Lemon 柠檬", "柠檬"))
+        assert(ManualSearch.titleIsRelevant("Yesterday", ""))
+        assert(!ManualSearch.titleIsRelevant("Come Together", "hello"))
+        assert(!ManualSearch.titleIsRelevant("Yellow Submarine", "hello world"))
     }
 }

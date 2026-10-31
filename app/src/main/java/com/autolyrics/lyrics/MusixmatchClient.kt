@@ -37,6 +37,9 @@ object MusixmatchClient {
     private const val APP_ID = "mac-ios-v2.0"
     private const val APP_VERSION = "10.1.1"
     private const val MIN_PROVIDER_METADATA_SCORE = 0.70
+    private const val ABSOLUTE_OFFSET_TOLERANCE_SEC = 2.0
+    private const val GAP_SPREAD_MS = 1_200L
+    private const val LINE_HOLD_SPREAD_MS = 1_200L
 
     private const val TOKEN_PREF_KEY = "musixmatch_mobile_user_token"
     private const val TOKEN_TIME_PREF_KEY = "musixmatch_mobile_user_token_time_ms"
@@ -66,7 +69,9 @@ object MusixmatchClient {
         val matchedAlbum: String,
         val matchedDurationSec: Double?,
         val isRichSync: Boolean,
-        val artistQueryCorroborated: Boolean = false
+        val artistQueryCorroborated: Boolean = false,
+        /** Compact RichSync payload-anomaly tag for the source label. */
+        val timingTag: String = ""
     )
 
     internal data class TrackCandidate(
@@ -130,27 +135,28 @@ object MusixmatchClient {
 
         if (candidate.hasRichSync) {
             val inlineRichSync = match.richSyncResponseJson
-                ?.let(::parseRichSyncResponse)
-                .orEmpty()
-            val richSync = if (inlineRichSync.isNotEmpty()) {
+                ?.let { parseRichSyncResponseWithStats(it) }
+                ?: (emptyList<LyricLine>() to "")
+            val richSync = if (inlineRichSync.first.isNotEmpty()) {
                 debugLog("using RichSync embedded in mobile macro response")
-                inlineRichSync
+                inlineRichSync.first to inlineRichSync.second
             } else if (candidate.commonTrackId != null) {
                 fetchRichSync(candidate, prefs)
             } else {
-                emptyList()
+                emptyList<LyricLine>() to ""
             }
 
-            if (richSync.isNotEmpty()) {
-                debugLog("mobile richsync accepted lines=${richSync.size}")
+            if (richSync.first.isNotEmpty()) {
+                debugLog("mobile richsync accepted lines=${richSync.first.size}")
                 return MusixmatchResult(
-                    lines = richSync,
+                    lines = richSync.first,
                     matchedTitle = candidate.title,
                     matchedArtist = candidate.artist,
                     matchedAlbum = candidate.album,
                     matchedDurationSec = candidate.durationSec,
                     isRichSync = true,
-                    artistQueryCorroborated = track.artist.isNotBlank()
+                    artistQueryCorroborated = track.artist.isNotBlank(),
+                    timingTag = richSync.second
                 )
             }
         }
@@ -220,15 +226,15 @@ object MusixmatchClient {
     private fun fetchRichSync(
         candidate: TrackCandidate,
         prefs: SharedPreferences?
-    ): List<LyricLine> {
-        val commonTrackId = candidate.commonTrackId ?: return emptyList()
+    ): Pair<List<LyricLine>, String> {
+        val commonTrackId = candidate.commonTrackId ?: return emptyList<LyricLine>() to ""
         val response = authenticatedRequest(
             endpoint = "track.richsync.get",
             params = linkedMapOf("commontrack_id" to commonTrackId.toString()),
             prefs = prefs
-        ) ?: return emptyList()
+        ) ?: return emptyList<LyricLine>() to ""
 
-        return parseRichSyncResponse(response.toString())
+        return parseRichSyncResponseWithStats(response.toString())
     }
 
     /** One search candidate for the manual pick-list. */
@@ -237,6 +243,7 @@ object MusixmatchClient {
         val trackId: String?,
         val title: String,
         val artist: String,
+        val durationSec: Int?,
         /** True/False when the search row carries `has_richsync`; null = unknown. */
         val hasRichSync: Boolean?
     )
@@ -294,11 +301,25 @@ object MusixmatchClient {
                 val commonTrackId = track.longOrNull("commontrack_id")
                     ?: return@mapNotNull null
                 val richSyncFlag = track.intOrNull("has_richsync")
+                // Field spellings differ between contract generations; take the
+                // first populated alias so rows never render with blank titles.
+                fun firstFilled(vararg keys: String): String {
+                    for (key in keys) {
+                        val value = track.string(key)
+                        if (value.isNotBlank()) return value
+                    }
+                    return ""
+                }
+                val durationSec = track.doubleOrNull("track_length_seconds")
+                    ?: track.doubleOrNull("track_length")
                 ManualCandidate(
                     commonTrackId = commonTrackId,
                     trackId = track.string("track_id").takeIf { it.isNotBlank() },
-                    title = track.string("name"),
-                    artist = track.string("primary_artist_name"),
+                    title = firstFilled("name", "track_name", "commontrack_name"),
+                    artist = firstFilled(
+                        "primary_artist_name", "artist_name", "primary_artists_name"
+                    ),
+                    durationSec = durationSec?.toInt()?.takeIf { it > 0 },
                     hasRichSync = richSyncFlag?.let { it == 1 }
                 )
             }
@@ -320,14 +341,16 @@ object MusixmatchClient {
             params = linkedMapOf("commontrack_id" to commonTrackId),
             prefs = prefs
         )
-        val richSyncLines = richSyncJson?.let { parseRichSyncResponse(it.toString()) }.orEmpty()
+        val richSyncParsed = richSyncJson?.let { parseRichSyncResponseWithStats(it.toString()) }
+            ?: (emptyList<LyricLine>() to "")
+        val richSyncLines = richSyncParsed.first
         if (richSyncLines.any { it.words.isNotEmpty() } &&
             richSyncLines.any { it.text.isNotBlank() && it.text != "♪" }
         ) {
             return ManualFetched(
                 lines = richSyncLines,
                 status = LyricsStatus.FOUND,
-                source = "Musixmatch · RichSync · Manual"
+                source = "Musixmatch · RichSync" + richSyncParsed.second
             )
         }
 
@@ -344,7 +367,7 @@ object MusixmatchClient {
             return ManualFetched(
                 lines = subtitleLines,
                 status = LyricsStatus.FOUND,
-                source = "Musixmatch · Line · Manual"
+                source = "Musixmatch · Line"
             )
         }
 
@@ -362,7 +385,7 @@ object MusixmatchClient {
             return ManualFetched(
                 lines = plainLines,
                 status = LyricsStatus.PLAIN_ONLY,
-                source = "Musixmatch · Plain · Manual"
+                source = "Musixmatch · Plain"
             )
         }
 
@@ -585,44 +608,93 @@ object MusixmatchClient {
             .distinctBy { it.timeMs to it.text }
     }
 
-    internal fun parseRichSyncResponse(json: String): List<LyricLine> {
-        val root = parseJsonObject(json) ?: return emptyList()
-        if (apiStatus(root) != 200) return emptyList()
+    internal fun parseRichSyncResponse(json: String): List<LyricLine> =
+        parseRichSyncResponseWithStats(json).first
+
+    internal fun parseRichSyncResponseWithStats(json: String): Pair<List<LyricLine>, String> {
+        val stats = RichSyncStats()
+        val root = parseJsonObject(json) ?: return emptyList<LyricLine>() to ""
+        if (apiStatus(root) != 200) return emptyList<LyricLine>() to ""
 
         val richSyncBody = deepFind(root, "richsync_body")
             ?.asStringOrNull()
             .orEmpty()
-        if (richSyncBody.isBlank()) return emptyList()
+        if (richSyncBody.isBlank()) return emptyList<LyricLine>() to ""
 
         return try {
             val lines = JsonParser.parseString(richSyncBody).asJsonArray
-            lines.mapNotNull { element ->
+            val parsed = lines.mapNotNull { element ->
                 val line = element.asJsonObject
                 val startSec = line.doubleOrNull("ts") ?: return@mapNotNull null
                 val text = line.string("x").ifBlank { "♪" }
                 val startMs = secondsToMs(startSec)
-                val words = parseRichSyncWords(line, startSec)
+                val words = parseRichSyncWords(line, startSec, stats)
 
-                LyricLine(
-                    timeMs = startMs,
-                    text = text,
-                    words = words
+                ParsedRichLine(
+                    line = LyricLine(
+                        timeMs = startMs,
+                        text = text,
+                        words = words
+                    ),
+                    endTimeMs = line.doubleOrNull("te")?.let { secondsToMs(it) }
                 )
             }
-                .filter { it.timeMs >= 0L }
-                .sortedBy { it.timeMs }
-                .distinctBy { it.timeMs to it.text }
+                .filter { it.line.timeMs >= 0L }
+                .sortedBy { it.line.timeMs }
+                .distinctBy { it.line.timeMs to it.line.text }
+            val repaired = parsed.mapIndexed { index, entry ->
+                val words = entry.line.words
+                val boundaryMs = effectiveLineEndMs(
+                    teMs = entry.endTimeMs,
+                    lastTokenMs = words.lastOrNull()?.timeMs,
+                    nextLineMs = parsed.getOrNull(index + 1)?.line?.timeMs
+                )
+                entry.line.copy(
+                    words = LrcParser.collapsePunctuation(
+                        spreadLongGaps(fillUncoveredText(entry.line.text, words, boundaryMs), boundaryMs)
+                    )
+                )
+            }
+            repaired to stats.tag()
         } catch (_: Exception) {
-            emptyList()
+            emptyList<LyricLine>() to ""
+        }
+    }
+
+    private data class ParsedRichLine(val line: LyricLine, val endTimeMs: Long?)
+
+    /** Field-visible anomaly counters for RichSync payloads (see source tag). */
+    private class RichSyncStats {
+        var fixed = 0
+        var outOfBounds = 0
+        var duplicates = 0
+        var missingText = 0
+        var maxGapSec = 0
+
+        fun tag(): String {
+            val parts = listOfNotNull(
+                "fix$fixed".takeIf { fixed > 0 },
+                "oob$outOfBounds".takeIf { outOfBounds > 0 },
+                "dup$duplicates".takeIf { duplicates > 0 },
+                "miss$missingText".takeIf { missingText > 0 },
+                "gap${maxGapSec}s".takeIf { maxGapSec >= GAP_TAG_MIN_SEC }
+            )
+            return if (parts.isEmpty()) "" else " · ${parts.joinToString(" ")}"
+        }
+
+        private companion object {
+            const val GAP_TAG_MIN_SEC = 3
         }
     }
 
     private fun parseRichSyncWords(
         line: JsonObject,
-        lineStartSec: Double
+        lineStartSec: Double,
+        stats: RichSyncStats? = null
     ): List<LyricWord> {
         val chunks = line.getAsJsonArray("l") ?: return emptyList()
         val words = mutableListOf<LyricWord>()
+        val lineSpanSec = line.doubleOrNull("te")?.let { it - lineStartSec }
 
         for (chunkElement in chunks) {
             val chunk = chunkElement.asJsonObject
@@ -630,8 +702,23 @@ object MusixmatchClient {
             val text = raw.trim()
             if (text.isBlank()) continue
 
-            val offsetSec = chunk.doubleOrNull("o") ?: 0.0
-            val timeMs = secondsToMs(lineStartSec + offsetSec)
+            var offsetSec = chunk.doubleOrNull("o") ?: 0.0
+            // Some payloads mix conventions and store absolute track times in
+            // `o` instead of line-relative offsets. Such a chunk lands far past
+            // the line end (te) and freezes the highlight until the next line;
+            // reinterpret it relative to the line start when that fits.
+            if (lineSpanSec != null && lineSpanSec > 0 &&
+                offsetSec > lineSpanSec + ABSOLUTE_OFFSET_TOLERANCE_SEC
+            ) {
+                val asRelative = offsetSec - lineStartSec
+                if (asRelative >= -ABSOLUTE_OFFSET_TOLERANCE_SEC &&
+                    asRelative <= lineSpanSec + ABSOLUTE_OFFSET_TOLERANCE_SEC
+                ) {
+                    offsetSec = asRelative
+                    stats?.let { it.fixed += 1 }
+                }
+            }
+            val timeMs = secondsToMs(lineStartSec + offsetSec.coerceAtLeast(0.0))
 
             if (isPunctuationOnly(text) && words.isNotEmpty()) {
                 val previous = words.removeAt(words.lastIndex)
@@ -641,7 +728,148 @@ object MusixmatchClient {
             }
         }
 
+        // Chunk offsets are occasionally non-monotonic (notably for CJK lines);
+        // restore chronological order so downstream timing can rely on it.
+        var monotonic = true
+        for (index in 1 until words.size) {
+            if (words[index].timeMs < words[index - 1].timeMs) {
+                monotonic = false
+                break
+            }
+        }
+        if (!monotonic) {
+            words.sortBy { it.timeMs }
+        }
+
+        if (stats != null) {
+            var maxGapMs = 0L
+            words.zipWithNext { previous, next ->
+                if (next.timeMs == previous.timeMs) stats.duplicates += 1
+                maxGapMs = maxOf(maxGapMs, next.timeMs - previous.timeMs)
+            }
+            stats.maxGapSec = maxOf(stats.maxGapSec, (maxGapMs / 1000L).toInt())
+            if (lineSpanSec != null) {
+                val endMs = secondsToMs(lineStartSec + lineSpanSec)
+                stats.outOfBounds += words.count { it.timeMs > endMs + 2_000L }
+            }
+            // Token texts that cannot be found in sequence inside the line's
+            // own `x` indicate interleaved or foreign token streams.
+            val lineText = line.string("x")
+            if (lineText.isNotBlank()) {
+                var cursor = 0
+                for (word in words) {
+                    val index = lineText.indexOf(word.text, startIndex = cursor)
+                    if (index < 0) {
+                        stats.missingText += 1
+                    } else {
+                        cursor = index + word.text.length
+                    }
+                }
+            }
+        }
+
         return words
+    }
+
+    /**
+     * Boundary for a line's final token. `te` is only trusted when it leaves
+     * a meaningful tail past the last token; polluted payloads set `te` at
+     * (or near) the line start, which would strand held CJK lines. In that
+     * case the line can plausibly be sung until the next line starts.
+     */
+    internal fun effectiveLineEndMs(teMs: Long?, lastTokenMs: Long?, nextLineMs: Long?): Long? {
+        if (lastTokenMs == null) return nextLineMs ?: teMs
+        if (teMs != null && teMs - lastTokenMs >= GAP_SPREAD_MS) return teMs
+        if (nextLineMs != null && nextLineMs > lastTokenMs) return nextLineMs
+        return teMs?.takeIf { it > lastTokenMs }
+    }
+
+    /**
+     * Some RichSync payloads only time the first stretch of the line text and
+     * leave the rest chunkless, so the highlight freezes while the singing
+     * continues through untimed words. Any run of line text no token covers
+     * gets per-character tokens spread evenly between the surrounding token
+     * times (or the line end for a trailing run).
+     */
+    internal fun fillUncoveredText(
+        lineText: String,
+        words: List<LyricWord>,
+        lineEndMs: Long?
+    ): List<LyricWord> {
+        if (lineText.isBlank() || words.isEmpty()) return words
+        val out = ArrayList<LyricWord>(words.size + 16)
+        var cursor = 0
+        var previousTimeMs = words.first().timeMs
+        for (word in words) {
+            val index = lineText.indexOf(word.text, startIndex = cursor)
+            if (index >= cursor) {
+                if (index > cursor) {
+                    out += spreadRun(lineText.substring(cursor, index), previousTimeMs, word.timeMs)
+                }
+                out += word
+                cursor = index + word.text.length
+            } else {
+                out += word
+            }
+            previousTimeMs = word.timeMs
+        }
+        if (cursor < lineText.length && lineEndMs != null) {
+            out += spreadRun(lineText.substring(cursor), previousTimeMs, lineEndMs)
+        }
+        return out
+    }
+
+    private fun spreadRun(run: String, fromMs: Long, toMs: Long): List<LyricWord> {
+        val characters = run.filter { !it.isWhitespace() }
+        if (characters.isEmpty() || toMs <= fromMs) return emptyList()
+        return characters.mapIndexed { index, character ->
+            LyricWord(
+                timeMs = fromMs + (toMs - fromMs) * index / characters.length,
+                text = character.toString()
+            )
+        }
+    }
+
+    /**
+     * RichSync payloads sometimes hold one chunk (often a whole CJK clause)
+     * across seconds of continuing singing. Freezing the highlight there
+     * reads as a stall followed by a jump, so multi-character tokens that
+     * start a long gap get their characters spread evenly across it — the
+     * same progressive sweep karaoke UIs render for held words.
+     */
+    internal fun spreadLongGaps(words: List<LyricWord>, lineEndMs: Long?): List<LyricWord> {
+        if (words.none { it.text.length > 1 }) return words
+        // A line carried by a single chunk freezes at singing tempo even for
+        // short spans, so it gets a far lower spread threshold than gaps
+        // between multiple chunks.
+        val thresholdMs = if (words.size == 1) LINE_HOLD_SPREAD_MS else GAP_SPREAD_MS
+        val boundaries = words.indices.map { index ->
+            words.getOrNull(index + 1)?.timeMs ?: lineEndMs ?: words[index].timeMs
+        }
+        if (words.indices.none { index ->
+                words[index].text.length > 1 &&
+                    boundaries[index] - words[index].timeMs >= thresholdMs
+            }
+        ) {
+            return words
+        }
+        val spread = ArrayList<LyricWord>(words.size + 8)
+        for (index in words.indices) {
+            val word = words[index]
+            val span = boundaries[index] - word.timeMs
+            val characters = word.text.length
+            if (characters < 2 || span < thresholdMs) {
+                spread += word
+                continue
+            }
+            word.text.forEachIndexed { characterIndex, character ->
+                spread += LyricWord(
+                    timeMs = word.timeMs + span * characterIndex / characters,
+                    text = character.toString()
+                )
+            }
+        }
+        return spread
     }
 
     private fun normalizedCandidate(

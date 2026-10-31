@@ -101,4 +101,32 @@ class LrcParserTest {
         assertEquals(listOf("春", "の", "光 ", "hello ", "world"), line.words.map { it.text })
         assertEquals(line.text, line.words.joinToString("") { it.text })
     }
+
+    @Test
+    fun karaokeWordTokensAreSortedChronologically() {
+        val line = LrcParser.parseKaraoke("[00:10.00]<00:12.00>b<00:10.50>a").single()
+
+        // Display order follows sung (time) order when tags disagree with text order.
+        assertEquals("ab", line.text)
+        assertEquals(listOf(10_500L, 12_000L), line.words.map { it.timeMs })
+        assertEquals(listOf("a", "b"), line.words.map { it.text })
+    }
+
+    @Test
+    fun repeatedLineTagsShiftWordTimesToTheirInstance() {
+        val lines = LrcParser.parseKaraoke("[00:10.00][00:40.00]<00:10.00>la<00:11.00>la")
+
+        assertEquals(2, lines.size)
+        assertEquals(listOf(10_000L, 11_000L), lines[0].words.map { it.timeMs })
+        assertEquals(listOf(40_000L, 41_000L), lines[1].words.map { it.timeMs })
+    }
+
+    @Test
+    fun untaggedPrefixTextRidesTheFirstToken() {
+        val line = LrcParser.parseKaraoke("[00:10.00]spoken <00:10.50>sung").single()
+
+        assertEquals("spoken sung", line.text)
+        assertEquals(listOf("spoken sung"), line.words.map { it.text })
+        assertEquals(10_500L, line.words.single().timeMs)
+    }
 }

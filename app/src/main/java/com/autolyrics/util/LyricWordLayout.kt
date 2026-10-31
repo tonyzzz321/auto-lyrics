@@ -39,6 +39,7 @@ object LyricWordLayout {
     )
 
     private val JAPANESE_SCRIPT = Regex("[\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff]")
+    private val CJK_SCRIPT = Regex("[\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff\\uac00-\\ud7af]")
     private val HAN_SCRIPT = Regex("[\\u3400-\\u4dbf\\u4e00-\\u9fff]")
     private val HIRAGANA_ONLY = Regex("[\\u3040-\\u309fー]+")
 
@@ -146,6 +147,33 @@ object LyricWordLayout {
      * compatibility path.
      */
     internal fun displayRangesForLine(line: LyricLine): List<DisplayRange>? {
+        // Views re-query ranges per token per animation frame; the alignment
+        // search below is quadratic, so memoize by line.
+        synchronized(rangesCache) {
+            if (rangesCache.containsKey(line)) return rangesCache[line]
+        }
+        val computed = computeDisplayRanges(line)
+        synchronized(rangesCache) {
+            if (rangesCache.size > RANGES_CACHE_MAX) rangesCache.clear()
+            rangesCache[line] = computed
+        }
+        return computed
+    }
+
+    /**
+     * Ranges in [LyricLine.text] space even when the credibility heuristic
+     * refuses the payload: as long as every token is sequentially locatable,
+     * token-space ranges keep the sweep stepping instead of dying entirely.
+     */
+    internal fun textSpaceRanges(line: LyricLine): List<DisplayRange>? {
+        displayRangesForLine(line)?.let { return it }
+        if (line.words.isEmpty()) return null
+        return locateTokensBestEffort(line).map { span ->
+            span?.let { DisplayRange(it.start, it.end) } ?: return null
+        }
+    }
+
+    private fun computeDisplayRanges(line: LyricLine): List<DisplayRange>? {
         if (line.words.isEmpty()) return emptyList()
         val ranges = lexicalRanges(line.text)
         if (ranges.isEmpty()) return null
@@ -153,11 +181,48 @@ object LyricWordLayout {
         val tokenSpans = locateTokensBestEffort(line)
         if (!hasCredibleAlignment(line, tokenSpans)) return null
 
+        // Character-level payloads for Japanese text carry the fidelity to
+        // highlight glyph-by-glyph; forcing dictionary-word ranges would make
+        // the highlight jump several syllables ahead and sit still after.
+        if (isCharacterLevelJapanese(line)) {
+            return tokenSpans.map { span ->
+                span?.let { extendPastTrailingGap(line, it.start, it.end) } ?: return null
+            }
+        }
+
         val result = ArrayList<DisplayRange>(line.words.size)
         line.words.indices.forEach { tokenIndex ->
             result += mapDisplayRange(line, tokenIndex, ranges, tokenSpans) ?: return null
         }
         return result
+    }
+
+    private fun isCharacterLevelJapanese(line: LyricLine): Boolean =
+        // Per-character payloads come from CJK uploads generally (SyncLRC
+        // tokenizes Korean and Chinese the same way), not just Japanese.
+        CJK_SCRIPT.containsMatchIn(line.text) &&
+            line.words.isNotEmpty() &&
+            // Syllable-sized tokens (optionally carrying collapsed punctuation)
+            // carry glyph-by-glyph fidelity; multi-syllable chunks do not.
+            line.words.all { word ->
+                word.text.trim().count { !isLayoutPunctuation(it) } <= 1
+            }
+
+    private fun isLayoutPunctuation(c: Char): Boolean =
+        !c.isLetterOrDigit() && !c.isWhitespace()
+
+    /**
+     * Trailing punctuation and spaces belong to no lexical range, so a highlight
+     * that stops at the range edge leaves them unlit until the line changes.
+     * Sweep them into the active token's range up to wherever the next token
+     * starts (the line's end for the final token).
+     */
+    private fun extendPastTrailingGap(line: LyricLine, rangeStart: Int, rangeEnd: Int): DisplayRange {
+        var gapEnd = rangeEnd
+        while (gapEnd < line.text.length && !line.text[gapEnd].isLetterOrDigit()) {
+            gapEnd++
+        }
+        return DisplayRange(rangeStart, maxOf(rangeEnd, gapEnd))
     }
 
     private fun mapDisplayRange(
@@ -173,7 +238,7 @@ object LyricWordLayout {
 
         ranges.firstOrNull { range ->
             token.start < range.end && token.end > range.start
-        }?.let { return it }
+        }?.let { return extendPastTrailingGap(line, it.start, it.end) }
 
         // Whitespace and punctuation can themselves be timed by some providers.
         // Keep the visible word stable through those tiny bridge tokens by mapping
@@ -265,7 +330,9 @@ object LyricWordLayout {
     }
 
     private fun normalizeForAlignment(text: String): String =
-        Normalizer.normalize(text, Normalizer.Form.NFC).lowercase(Locale.ROOT)
+        Normalizer.normalize(text, Normalizer.Form.NFC)
+            .lowercase(Locale.ROOT)
+            .filter { !it.isWhitespace() }
 
     private fun canonicalContent(text: String): String =
         normalizeForAlignment(text).filter { it.isLetterOrDigit() }
@@ -310,7 +377,7 @@ object LyricWordLayout {
         return ranges.minWithOrNull(
             compareBy<DisplayRange> { pointDistance(target, it) }
                 .thenBy { if (it.end.toFloat() <= target) 0 else 1 }
-        )
+        )?.let { extendPastTrailingGap(line, it.start, it.end) }
     }
 
     private fun lexicalRanges(text: String): List<DisplayRange> {
@@ -380,6 +447,8 @@ object LyricWordLayout {
         )
     }
 
+    private val rangesCache = LinkedHashMap<LyricLine, List<DisplayRange>?>(64, 0.75f, false)
+    private const val RANGES_CACHE_MAX = 256
     private const val NORMALIZATION_SLACK_CHARS = 4
     private const val MIN_PARTIAL_ANCHORS = 2
     private const val MIN_COVERAGE_NUMERATOR = 1

@@ -60,7 +60,7 @@ class LyricWordLayoutTest {
         val layout = LyricWordLayout.layout(line)
 
         assertEquals(listOf("", "", " ", " ", " "), layout.prefixes)
-        assertEquals("君と世界 【I】 love you", LyricWordLayout.karaokeText(line, 2))
+        assertEquals("君と世界 【I 】love you", LyricWordLayout.karaokeText(line, 2))
     }
 
     @Test
@@ -77,14 +77,14 @@ class LyricWordLayoutTest {
             )
         )
 
-        assertEquals("【Provider】 timing works", LyricWordLayout.karaokeText(line, 0))
-        assertEquals("【Provider】 timing works", LyricWordLayout.karaokeText(line, 1))
-        assertEquals("【Provider】 timing works", LyricWordLayout.karaokeText(line, 2))
-        assertEquals("Provider 【timing】 works", LyricWordLayout.karaokeText(line, 3))
+        assertEquals("【Provider 】timing works", LyricWordLayout.karaokeText(line, 0))
+        assertEquals("【Provider 】timing works", LyricWordLayout.karaokeText(line, 1))
+        assertEquals("【Provider 】timing works", LyricWordLayout.karaokeText(line, 2))
+        assertEquals("Provider 【timing 】works", LyricWordLayout.karaokeText(line, 3))
     }
 
     @Test
-    fun japaneseCharacterTokensAreGroupedForDisplay() {
+    fun japaneseCharacterTokensHighlightCharacterByCharacter() {
         val text = "君を忘れない"
         val line = LyricLine(
             timeMs = 1_000L,
@@ -94,10 +94,41 @@ class LyricWordLayoutTest {
             }
         )
 
-        assertEquals("【君を】忘れない", LyricWordLayout.karaokeText(line, 0))
-        assertEquals("【君を】忘れない", LyricWordLayout.karaokeText(line, 1))
-        assertEquals("君を【忘れない】", LyricWordLayout.karaokeText(line, 2))
-        assertEquals("君を【忘れない】", LyricWordLayout.karaokeText(line, 5))
+        assertEquals("【君】を忘れない", LyricWordLayout.karaokeText(line, 0))
+        assertEquals("君【を】忘れない", LyricWordLayout.karaokeText(line, 1))
+        assertEquals("君を【忘】れない", LyricWordLayout.karaokeText(line, 2))
+        assertEquals("君を忘れな【い】", LyricWordLayout.karaokeText(line, 5))
+    }
+
+    @Test
+    fun japaneseEndingPunctuationLightsWithTheFinalSyllable() {
+        val line = LyricLine(
+            timeMs = 1_000L,
+            text = "わぁー！",
+            words = listOf(
+                LyricWord(1_000L, "わ"),
+                LyricWord(2_000L, "ぁ"),
+                LyricWord(3_000L, "ー！")
+            )
+        )
+
+        assertEquals("わぁ【ー！】", LyricWordLayout.karaokeText(line, 2))
+    }
+
+    @Test
+    fun koreanCharacterTokensHighlightCharacterByCharacter() {
+        val text = "사랑해요"
+        val line = LyricLine(
+            timeMs = 1_000L,
+            text = text,
+            words = text.mapIndexed { index, char ->
+                LyricWord(1_000L + index * 150L, char.toString())
+            }
+        )
+
+        assertEquals("【사】랑해요", LyricWordLayout.karaokeText(line, 0))
+        assertEquals("사【랑】해요", LyricWordLayout.karaokeText(line, 1))
+        assertEquals("사랑해【요】", LyricWordLayout.karaokeText(line, 3))
     }
 
     @Test
@@ -130,7 +161,7 @@ class LyricWordLayoutTest {
 
         assertEquals("Hello world", rendered.text)
         assertArrayEquals(intArrayOf(0, 0, 6), rendered.tokenStart)
-        assertArrayEquals(intArrayOf(5, 5, 11), rendered.tokenEnd)
+        assertArrayEquals(intArrayOf(6, 6, 11), rendered.tokenEnd)
     }
 
     @Test

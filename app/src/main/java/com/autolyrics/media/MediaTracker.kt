@@ -102,6 +102,46 @@ class MediaTracker private constructor(context: Context) {
         lyricsOffsetMs = prefs.getLong("lyrics_offset_ms", 0L)
         _state.value = _state.value.copy(offsetMs = lyricsOffsetMs)
         prefs.registerOnSharedPreferenceChangeListener(preferenceChangeListener)
+        startPreferenceReconciliation()
+    }
+
+    /**
+     * Polls the settings keys the instant-apply handlers depend on and invokes
+     * the same handlers when a change was missed. Listeners stay registered as
+     * the fast path; this loop guarantees toggles land even when a listener
+     * callback is lost (seen in the field: switches flipping with no callback).
+     */
+    private fun startPreferenceReconciliation() {
+        scope.launch {
+            var translationEnabled = prefs.getBoolean(TRANSLATION_ENABLED_KEY, true)
+            var karaoke = prefs.getBoolean(AA_KARAOKE_ENABLED_KEY, true)
+            var target = prefs.getString(TranslationLanguages.TARGET_LANGUAGE_PREF_KEY, null)
+            var engine = prefs.getString(LlmTranslator.PREF_ENGINE_KEY, null)
+            var model = prefs.getString(LlmTranslator.PREF_LLM_MODEL, null)
+            while (isActive) {
+                delay(PREFERENCE_RECONCILE_MS)
+                val nowTranslation = prefs.getBoolean(TRANSLATION_ENABLED_KEY, true)
+                val nowKaraoke = prefs.getBoolean(AA_KARAOKE_ENABLED_KEY, true)
+                val nowTarget = prefs.getString(TranslationLanguages.TARGET_LANGUAGE_PREF_KEY, null)
+                val nowEngine = prefs.getString(LlmTranslator.PREF_ENGINE_KEY, null)
+                val nowModel = prefs.getString(LlmTranslator.PREF_LLM_MODEL, null)
+
+                if (nowTarget != target || nowEngine != engine || nowModel != model) {
+                    target = nowTarget
+                    engine = nowEngine
+                    model = nowModel
+                    translationEnabled = nowTranslation
+                    karaoke = nowKaraoke
+                    handleTranslationTargetChanged()
+                } else if (nowTranslation != translationEnabled) {
+                    translationEnabled = nowTranslation
+                    handleTranslationPreferenceChanged()
+                } else if (nowKaraoke != karaoke) {
+                    karaoke = nowKaraoke
+                    handleKaraokePreferenceChanged()
+                }
+            }
+        }
     }
 
     private val positionChecker = object : Runnable {
@@ -659,7 +699,7 @@ class MediaTracker private constructor(context: Context) {
             durationSec = result.matchedDurationSec,
             lines = result.lines,
             status = LyricsStatus.FOUND,
-            source = if (result.isRichSync) "Musixmatch · RichSync" else "Musixmatch · Line",
+            source = if (result.isRichSync) "Musixmatch · RichSync" + result.timingTag else "Musixmatch · Line",
             syncKind = syncKind,
             artistQueryCorroborated = result.artistQueryCorroborated
         )
@@ -786,7 +826,7 @@ class MediaTracker private constructor(context: Context) {
                             provider = "Musixmatch",
                             title = candidate.title,
                             artist = candidate.artist,
-                            durationSec = null,
+                            durationSec = candidate.durationSec,
                             kind = if (candidate.hasRichSync == true) {
                                 ManualHitKind.KARAOKE
                             } else {
@@ -794,13 +834,18 @@ class MediaTracker private constructor(context: Context) {
                             },
                             lines = emptyList(),
                             status = LyricsStatus.FOUND,
-                            source = "Musixmatch · Line · Manual",
+                            source = "Musixmatch · Line",
                             fetch = { MusixmatchClient.fetchManualLyrics(candidate, prefs) }
                         )
                     }
                 )
             val ourDurationSec = (_state.value.track?.durationMs ?: 0L) / 1000
-            val ranked = ManualSearch.rank(hits, ourDurationSec.toInt())
+            val relevant = hits.filter { ManualSearch.titleIsRelevant(it.title, title) }
+            val dropped = hits.size - relevant.size
+            if (dropped > 0) {
+                diagnostics += "title filter: -$dropped"
+            }
+            val ranked = ManualSearch.rank(relevant, ourDurationSec.toInt())
             withContext(Dispatchers.Main) { onResult(ranked, diagnostics.toList()) }
         }
     }
@@ -1029,6 +1074,7 @@ class MediaTracker private constructor(context: Context) {
         private const val PROVIDER_RESOLVER_TAG = "ProviderResolver"
         private const val TRANSLATION_ENABLED_KEY = "translation_enabled"
         private const val AA_KARAOKE_ENABLED_KEY = "aa_karaoke_enabled"
+        private const val PREFERENCE_RECONCILE_MS = 500L
 
         @Volatile
         private var instance: MediaTracker? = null

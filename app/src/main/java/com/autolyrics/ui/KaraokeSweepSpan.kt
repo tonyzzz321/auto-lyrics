@@ -19,27 +19,31 @@ internal object PhoneKaraokeSweep {
     fun segmentAtPosition(line: LyricLine, positionMs: Long): Segment? {
         if (line.words.isEmpty()) return null
 
-        var latestToken = -1
+        var latestIndex = -1
+        var latestTime = Long.MIN_VALUE
+        // Tolerate out-of-order tokens like KaraokeTiming does; a break at the
+        // first future token freezes the sweep while the song keeps singing.
         for (index in line.words.indices) {
-            if (line.words[index].timeMs <= positionMs) {
-                latestToken = index
-            } else {
-                break
+            val time = line.words[index].timeMs
+            if (time <= positionMs && time >= latestTime) {
+                latestIndex = index
+                latestTime = time
             }
         }
-        if (latestToken < 0) return null
+        if (latestIndex < 0) return null
 
-        val activeRange = LyricWordLayout.displayRangeForToken(line, latestToken) ?: return null
+        val ranges = LyricWordLayout.textSpaceRanges(line) ?: return null
+        val activeRange = ranges.getOrNull(latestIndex) ?: return null
 
-        var groupFirst = latestToken
-        while (groupFirst > 0 && sameDisplayRange(line, groupFirst - 1, activeRange.start, activeRange.end)) {
+        var groupFirst = latestIndex
+        while (groupFirst > 0 && sameDisplayRange(line, ranges, groupFirst - 1, activeRange.start, activeRange.end)) {
             groupFirst--
         }
 
-        var groupLast = latestToken
+        var groupLast = latestIndex
         while (
             groupLast + 1 < line.words.size &&
-            sameDisplayRange(line, groupLast + 1, activeRange.start, activeRange.end)
+            sameDisplayRange(line, ranges, groupLast + 1, activeRange.start, activeRange.end)
         ) {
             groupLast++
         }
@@ -64,11 +68,12 @@ internal object PhoneKaraokeSweep {
 
     private fun sameDisplayRange(
         line: LyricLine,
+        ranges: List<LyricWordLayout.DisplayRange>,
         tokenIndex: Int,
         start: Int,
         end: Int
     ): Boolean {
-        val range = LyricWordLayout.displayRangeForToken(line, tokenIndex) ?: return false
+        val range = ranges.getOrNull(tokenIndex) ?: return false
         return range.start == start && range.end == end
     }
 

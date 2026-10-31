@@ -21,14 +21,14 @@ class LyricWordDisplayRangeTest {
             )
         )
 
-        val expected = LyricWordLayout.DisplayRange(0, 8)
+        val expected = LyricWordLayout.DisplayRange(0, 9)
         assertEquals(expected, LyricWordLayout.displayRangeForToken(line, 0))
         assertEquals(expected, LyricWordLayout.displayRangeForToken(line, 1))
         assertEquals(expected, LyricWordLayout.displayRangeForToken(line, 2))
     }
 
     @Test
-    fun japaneseCharacterTokensMapToReadableDisplayUnits() {
+    fun japaneseCharacterTokensMapToTheirOwnCharacters() {
         val text = "君を忘れない"
         val line = LyricLine(
             timeMs = 1_000L,
@@ -39,11 +39,11 @@ class LyricWordDisplayRangeTest {
         )
 
         assertEquals(
-            LyricWordLayout.DisplayRange(0, 2),
+            LyricWordLayout.DisplayRange(1, 2),
             LyricWordLayout.displayRangeForToken(line, 1)
         )
         assertEquals(
-            LyricWordLayout.DisplayRange(2, text.length),
+            LyricWordLayout.DisplayRange(5, text.length),
             LyricWordLayout.displayRangeForToken(line, 5)
         )
     }
@@ -60,7 +60,7 @@ class LyricWordDisplayRangeTest {
         )
 
         assertEquals(
-            LyricWordLayout.DisplayRange(0, 5),
+            LyricWordLayout.DisplayRange(0, 6),
             LyricWordLayout.displayRangeForToken(line, 0)
         )
         assertEquals(
@@ -81,7 +81,7 @@ class LyricWordDisplayRangeTest {
         )
 
         assertEquals(
-            LyricWordLayout.DisplayRange(0, 5),
+            LyricWordLayout.DisplayRange(0, 6),
             LyricWordLayout.displayRangeForToken(line, 0)
         )
         assertEquals(
@@ -106,11 +106,11 @@ class LyricWordDisplayRangeTest {
         )
 
         assertEquals(
-            LyricWordLayout.DisplayRange(14, 15),
+            LyricWordLayout.DisplayRange(14, 16),
             LyricWordLayout.displayRangeForToken(line, 1)
         )
         assertEquals(
-            LyricWordLayout.DisplayRange(16, 17),
+            LyricWordLayout.DisplayRange(16, 18),
             LyricWordLayout.displayRangeForToken(line, 2)
         )
     }
@@ -127,7 +127,7 @@ class LyricWordDisplayRangeTest {
             )
         )
 
-        val hello = LyricWordLayout.DisplayRange(0, 5)
+        val hello = LyricWordLayout.DisplayRange(0, 6)
         assertEquals(hello, LyricWordLayout.displayRangeForToken(line, 0))
         assertEquals(hello, LyricWordLayout.displayRangeForToken(line, 1))
         assertEquals(
@@ -150,12 +150,12 @@ class LyricWordDisplayRangeTest {
             )
         )
 
-        val provider = LyricWordLayout.DisplayRange(0, 8)
+        val provider = LyricWordLayout.DisplayRange(0, 9)
         assertEquals(provider, LyricWordLayout.displayRangeForToken(line, 0))
         assertEquals(provider, LyricWordLayout.displayRangeForToken(line, 1))
         assertEquals(provider, LyricWordLayout.displayRangeForToken(line, 2))
         assertEquals(
-            LyricWordLayout.DisplayRange(9, 15),
+            LyricWordLayout.DisplayRange(9, 16),
             LyricWordLayout.displayRangeForToken(line, 3)
         )
     }
@@ -172,7 +172,7 @@ class LyricWordDisplayRangeTest {
         )
 
         assertEquals(
-            LyricWordLayout.DisplayRange(0, 4),
+            LyricWordLayout.DisplayRange(0, 5),
             LyricWordLayout.displayRangeForToken(line, 0)
         )
         assertEquals(

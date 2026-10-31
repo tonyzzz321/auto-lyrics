@@ -2,6 +2,7 @@ package com.autolyrics.lyrics
 
 import com.autolyrics.model.LyricLine
 import com.autolyrics.model.LyricsStatus
+import java.text.Normalizer
 import java.util.Locale
 import kotlin.math.abs
 
@@ -88,7 +89,7 @@ object ManualSearch {
                     kind = if (karaoke) ManualHitKind.KARAOKE else ManualHitKind.SYNCED,
                     lines = syncedLines,
                     status = LyricsStatus.FOUND,
-                    source = if (karaoke) "LRCLIB · Karaoke · Manual" else "LRCLIB · Synced · Manual"
+                    source = if (karaoke) "LRCLIB · Karaoke" else "LRCLIB · Synced"
                 )
                 continue
             }
@@ -107,7 +108,7 @@ object ManualSearch {
                     kind = ManualHitKind.PLAIN,
                     lines = plainLines,
                     status = LyricsStatus.PLAIN_ONLY,
-                    source = "LRCLIB · Plain · Manual"
+                    source = "LRCLIB · Plain"
                 )
             }
         }
@@ -135,7 +136,7 @@ object ManualSearch {
                 kind = ManualHitKind.KARAOKE,
                 lines = karaokeLines,
                 status = LyricsStatus.FOUND,
-                source = "SyncLRC · Karaoke · Manual"
+                source = "SyncLRC · Karaoke"
             )
         }
 
@@ -153,7 +154,7 @@ object ManualSearch {
                 kind = ManualHitKind.SYNCED,
                 lines = syncedLines,
                 status = LyricsStatus.FOUND,
-                source = "SyncLRC · Synced · Manual"
+                source = "SyncLRC · Synced"
             )
         }
 
@@ -171,11 +172,62 @@ object ManualSearch {
                 kind = ManualHitKind.PLAIN,
                 lines = plainLines,
                 status = LyricsStatus.PLAIN_ONLY,
-                source = "SyncLRC · Plain · Manual"
+                source = "SyncLRC · Plain"
             )
         }
         return null
     }
+
+    /**
+     * Keeps results whose title plausibly matches the searched title, so an
+     * artist-wide fallback query cannot bury the actual song under other
+     * recordings by the same artist. Deliberately lenient: dropping a real
+     * match would be worse than keeping a near miss.
+     */
+    internal fun titleIsRelevant(resultTitle: String, queryTitle: String): Boolean {
+        val query = normalizeSearchTitle(queryTitle)
+        if (query.isBlank()) return true
+        val candidate = normalizeSearchTitle(resultTitle)
+        if (candidate.isBlank()) return false
+
+        if (candidate.contains(query) || query.contains(candidate)) return true
+
+        val queryTokens = query.split(' ').filter { it.isNotBlank() }.toSet()
+        val candidateTokens = candidate.split(' ').filter { it.isNotBlank() }.toSet()
+        val sharedTokens = queryTokens.count { candidateTokens.contains(it) }
+        if (queryTokens.isNotEmpty() && sharedTokens * 2 >= queryTokens.size) return true
+
+        // Script-based fallback: CJK queries tokenize as whole phrases, so
+        // compare character coverage instead. Latin stays token-only because
+        // letter coverage is meaningless across space-separated words.
+        if (query.none { it in 'a'..'z' }) {
+            val queryChars = query.filter { !it.isWhitespace() }.toSet()
+            if (queryChars.isNotEmpty() &&
+                queryChars.count { candidate.contains(it) } * 2 >= queryChars.size
+            ) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private val TITLE_PARENTHESES = Regex("[\\[(][^\\])]*[\\])]")
+
+    private val TITLE_NOISE_TOKENS = setOf(
+        "official", "lyrics", "lyric", "video", "audio", "visualiser", "visualizer",
+        "mv", "hd", "hq", "4k", "remaster", "remastered"
+    )
+
+    internal fun normalizeSearchTitle(value: String): String =
+        Normalizer.normalize(value, Normalizer.Form.NFC)
+            .lowercase(Locale.ROOT)
+            .let { TITLE_PARENTHESES.replace(it, " ") }
+            .map { if (it.isLetterOrDigit()) it else ' ' }
+            .joinToString("")
+            .split(' ')
+            .filter { it.isNotBlank() && it !in TITLE_NOISE_TOKENS }
+            .joinToString(" ")
 
     fun rank(hits: List<ManualSearchHit>, ourDurationSec: Int): List<ManualSearchHit> =
         hits.sortedWith(

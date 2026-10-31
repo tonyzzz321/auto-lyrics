@@ -125,6 +125,33 @@ class SungLineTest {
     }
 
     @Test
+    fun eachMarkerCountsToItsOwnSuccessor() {
+        val rows = SungLine.virtualRows(song, song.size)
+        // Intro (row 0) is 1 s from "first line" (10 s); the previewed
+        // interlude (row 2) sits 51 s from its successor (60 s). Before the
+        // per-row target they both read the FIRST-FUTURE line and ticked in
+        // lockstep under the intro countdown.
+        assertEquals(1, SungLine.markerCountdownSeconds(rows, 0, song, 9_000L))
+        assertEquals(4, SungLine.markerCountdownSeconds(rows, 2, song, 9_000L))
+        // The interlude itself ticks only inside its own final seconds.
+        assertEquals(4, SungLine.markerCountdownSeconds(rows, 4, song, 66_000L))
+        assertEquals(1, SungLine.markerCountdownSeconds(rows, 4, song, 69_000L))
+    }
+
+    @Test
+    fun previewNeverSkipsAMarkerRow() {
+        val rows = SungLine.virtualRows(song, song.size)
+        // A marker IS the next row after L0 and L1: the preview lands on
+        // the marker itself, never skipping to the lyric behind it.
+        assertEquals(SungLine.VRow(0, true), SungLine.previewSuccessor(rows, 1))
+        assertEquals(SungLine.VRow(1, true), SungLine.previewSuccessor(rows, 3))
+        // Real-row successors unchanged.
+        assertEquals(0, SungLine.previewSuccessor(rows, 0)?.realIndex)   // intro -> first line
+        assertEquals(3, SungLine.previewSuccessor(rows, 5)?.realIndex)   // L2 -> L3
+        assertNull(SungLine.previewSuccessor(rows, 6))                   // last row
+    }
+
+    @Test
     fun nextLineAfterMarkerIsTheComingLyric() {
         val rows = SungLine.virtualRows(song, song.size)
         assertEquals(10_000L, SungLine.nextLineMs(rows, song, 0))   // after intro

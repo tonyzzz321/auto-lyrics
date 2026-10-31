@@ -72,6 +72,34 @@ class AaHostEdgeTest {
     }
 
     @Test
+    fun pinnedColumnSurvivesUpgradesAndResetReleasesIt() {
+        val prefs = FakePrefs()
+        AaHost.fingerprint = "abcd"
+        // First sight resolves the CURRENT model (icon 143 -> base 42, edge 0).
+        assertEquals(42, AaHost.column(prefs, 143))
+        // A column-model upgrade (or any restored delta pref) must NOT move
+        // a calibrated car: the pinned resolution answers, not a recompute.
+        prefs.edit().putInt("aa_karaoke_edge:abcd", 5).apply()
+        assertEquals(42, AaHost.column(prefs, 143))
+        // Moving the knob re-resolves against what this build renders.
+        AaHost.putEdge(prefs, 5, iconPx = 143)
+        assertEquals(47, AaHost.column(prefs, 143))
+        // Reset drops the pin: control returns to the current model.
+        AaHost.resetEdge(prefs, "abcd")
+        assertEquals(42, AaHost.column(prefs, 143))
+    }
+
+    @Test
+    fun hintLessCarKeepsPlainDeltaReadWithoutPinning() {
+        val prefs = FakePrefs()
+        AaHost.fingerprint = null
+        prefs.edit().putInt("aa_karaoke_edge", 3).apply()
+        assertEquals(45, AaHost.column(prefs, -1)) // fallback 42 + global edge 3
+        // No identity to pin to: nothing is cached, the delta keeps answering.
+        org.junit.Assert.assertFalse(prefs.contains("aa_karaoke_column"))
+    }
+
+    @Test
     fun resetClearsGlobalSoStaleEdgeCannotResurrect() {
         val prefs = FakePrefs()
         AaHost.fingerprint = "abcd"

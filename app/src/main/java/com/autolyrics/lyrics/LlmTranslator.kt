@@ -193,7 +193,7 @@ object LlmTranslator : TranslationEngineUi {
                 reason = "Could not normalize lyric language '$detectedLanguage'"
             )
 
-        if (source == target) {
+        if (TranslationLanguages.baseLanguage(source) == TranslationLanguages.baseLanguage(target)) {
             _uiState.value = LyricsTranslator.UiState(
                 phase = LyricsTranslator.Phase.ALREADY_ENGLISH,
                 sourceLanguage = source,
@@ -441,8 +441,8 @@ object LlmTranslator : TranslationEngineUi {
     }
 
     internal fun buildSystemPrompt(count: Int, source: String, target: String): String {
-        val sourceName = TranslationLanguages.displayName(source)
-        val targetName = TranslationLanguages.displayName(target)
+        val sourceName = TranslationLanguages.englishName(source)
+        val targetName = TranslationLanguages.englishName(target)
         return """
             You are a professional lyric translator. You translate song lyrics line by line.
 
@@ -474,8 +474,8 @@ object LlmTranslator : TranslationEngineUi {
         val lines = JsonArray().apply { chunkTexts.forEach { add(it) } }
         return header.append(
             "Translate these ${chunkTexts.size} lyric lines from " +
-                "${TranslationLanguages.displayName(source)} to " +
-                "${TranslationLanguages.displayName(target)}. " +
+                "${TranslationLanguages.englishName(source)} to " +
+                "${TranslationLanguages.englishName(target)}. " +
                 "Return only the JSON array of ${chunkTexts.size} strings.\n\n"
         ).append(gson.toJson(lines)).toString()
     }

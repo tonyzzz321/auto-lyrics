@@ -11,6 +11,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import com.autolyrics.BuildConfig
+import com.autolyrics.util.LyricDisplay
 import com.autolyrics.lyrics.KaraokeTiming
 import com.autolyrics.lyrics.LrcLibClient
 import com.autolyrics.lyrics.LrcParser
@@ -69,6 +70,7 @@ class MediaTracker private constructor(context: Context) {
     private val handler = Handler(Looper.getMainLooper())
     private val prefs: SharedPreferences =
         context.getSharedPreferences("auto_lyrics_prefs", Context.MODE_PRIVATE)
+    private val appContext = context.applicationContext
     private val lyricsCache = LyricsCache(context)
     private val translationCache = TranslationCache(context)
 
@@ -450,7 +452,8 @@ class MediaTracker private constructor(context: Context) {
                 }
                 val cached = lyricsCache.get(track, cacheVariant)
                 if (cached != null) {
-                    val (lines, status, source) = cached
+                    val (rawLines, status, source) = cached
+                    val lines = prepared(rawLines, track)
                     withContext(Dispatchers.Main) {
                         if (_state.value.track != track ||
                             prefs.getBoolean(AA_KARAOKE_ENABLED_KEY, true) != preferWordSync
@@ -492,6 +495,7 @@ class MediaTracker private constructor(context: Context) {
                 }
                 val result = decision.candidate
 
+                val publishLines = result?.lines?.let { prepared(it, track) }
                 withContext(Dispatchers.Main) {
                     if (_state.value.track != track ||
                         prefs.getBoolean(AA_KARAOKE_ENABLED_KEY, true) != preferWordSync
@@ -499,7 +503,7 @@ class MediaTracker private constructor(context: Context) {
                         return@withContext
                     }
 
-                    if (result != null) {
+                    if (result != null && publishLines != null) {
                         lyricsCache.put(
                             track = track,
                             lines = result.lines,
@@ -508,7 +512,7 @@ class MediaTracker private constructor(context: Context) {
                             variant = cacheVariant
                         )
                         _state.value = _state.value.copy(
-                            lines = result.lines,
+                            lines = publishLines,
                             currentIndex = -1,
                             currentWordIndex = -1,
                             status = result.status,
@@ -519,7 +523,7 @@ class MediaTracker private constructor(context: Context) {
                         if (result.status == LyricsStatus.FOUND) {
                             updateCurrentPosition()
                         }
-                        translateIfNeeded(result.lines, track)
+                        translateIfNeeded(publishLines, track)
                     } else if (cached == null) {
                         _state.value = _state.value.copy(
                             status = LyricsStatus.NOT_FOUND,
@@ -1003,12 +1007,13 @@ class MediaTracker private constructor(context: Context) {
             source = hit.source,
             variant = variant
         )
+        val preparedLines = prepared(hit.lines, track)
         // A manual pick is an explicit user refresh: drop any cached
         // translation so retranslation runs against the new lyrics even if
         // the picked text happens to match what was cached before.
-        translationCache.delete(track, hit.lines, selectedTargetLanguage())
+        translationCache.delete(track, preparedLines, selectedTargetLanguage())
         _state.value = _state.value.copy(
-            lines = hit.lines,
+            lines = preparedLines,
             currentIndex = -1,
             currentWordIndex = -1,
             status = hit.status,
@@ -1019,7 +1024,7 @@ class MediaTracker private constructor(context: Context) {
         if (hit.status == LyricsStatus.FOUND) {
             updateCurrentPosition()
         }
-        translateIfNeeded(hit.lines, track)
+        translateIfNeeded(preparedLines, track)
         return true
     }
 
@@ -1093,6 +1098,23 @@ class MediaTracker private constructor(context: Context) {
         }
 
         translateIfNeeded(currentState.lines, track)
+    }
+
+    /**
+     * Display-preparation step applied to lyrics right before they enter
+     * state (the lyrics cache always keeps the provider's ORIGINAL form):
+     * when translation targets a Chinese written form and the text is
+     * detectably the other form, convert offline (no engine call — a form
+     * change is a dictionary lookup, never a translation). Tied to the
+     * Translate-Lyrics toggle: OFF means show exactly what shipped.
+     */
+    private fun prepared(lines: List<LyricLine>, track: TrackInfo): List<LyricLine> {
+        val clean = LyricDisplay.stripTitleArtistHeaders(lines, track.title, track.artist)
+        if (clean.isEmpty() || !prefs.getBoolean(TRANSLATION_ENABLED_KEY, true)) return clean
+        val target = selectedTargetLanguage()
+        if (!TranslationLanguages.isChineseTarget(target)) return clean
+        com.autolyrics.util.ChineseVariant.ensureLoaded(appContext)
+        return com.autolyrics.util.ChineseVariant.applyTo(clean, target)
     }
 
     private fun selectedTargetLanguage(): String {

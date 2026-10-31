@@ -220,4 +220,20 @@ class AaKaraokeRowsTest {
         assertEquals("\uD83D\uDD25".repeat(4) + "\u2026", cut)
     }
 
+
+    @Test
+    fun wordGuardOnlyForProportionalRuns() {
+        // Wide-char titles are model-exact: no reserve, edge-landing kept.
+        assertEquals(0.0, AaKaraokeRows.wordGuardEm("ミラクルショッピング 〜ドン・キホーテのテーマ〜"), 0.001)
+        assertEquals(0.0, AaKaraokeRows.wordGuardEm("思い立ったらいつだって"), 0.001)
+        // Latin-heavy mixed title: the widest proportional run is reserved
+        // (the run Gearhead would tip onto the second line).
+        val mixed = AaKaraokeRows.wordGuardEm("レイジョアハンズ!! ~Raise Y/Our Hands")
+        org.junit.Assert.assertTrue("guard $mixed", mixed >= 2.5)
+        org.junit.Assert.assertTrue("guard $mixed", mixed <= 2.501)
+        // Short proportional fragments never trip the guard.
+        assertEquals(0.0, AaKaraokeRows.wordGuardEm("レイ!クレア"), 0.001)
+        // A 3-char fragment reserves only its own width.
+        assertEquals(1.84, AaKaraokeRows.wordGuardEm("レイ(CV.優)"), 0.01)
+    }
 }

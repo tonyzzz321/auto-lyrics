@@ -56,6 +56,36 @@ internal object AaKaraokeRows {
         return width
     }
 
+    /**
+     * Wrap guard for the header TITLE: the host word-wraps the title field,
+     * so a string the advance model thinks fits can still tip its LAST
+     * proportional-width WORD onto a second line whenever the real title
+     * font renders that run even slightly wider than the model. Pure
+     * wide-char titles are model-exact (every glyph is 1.0 em) and need no
+     * reserve - they ellipsize exactly on the edge. Titles carrying
+     * substantial proportional content therefore reserve the widest
+     * Latin-ish word so the ellipsis lands before the wrap point; the
+     * landing may sit up to that word short of the edge, which is the
+     * bounded, one-line-guaranteed alternative to the host wrapping the
+     * header (and stealing a row from the board).
+     */
+    fun wordGuardEm(text: String, capEm: Double = 2.5): Double {
+        var longest = 0.0
+        var run = ""
+        for (ch in text + ' ') {
+            if (ch == ' ' || isWide(ch) || ch == '\u25b6' || ch == '\u25b8') {
+                if (run.length >= 3) {
+                    val em = advanceEm(run)
+                    if (em > longest) longest = em
+                }
+                run = ""
+            } else {
+                run += ch
+            }
+        }
+        return longest.coerceAtMost(capEm)
+    }
+
     private fun isWide(ch: Char): Boolean {
         val c = ch.code
         return c in 0x1100..0x115F ||

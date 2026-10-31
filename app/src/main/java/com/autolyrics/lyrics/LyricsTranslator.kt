@@ -220,8 +220,8 @@ object LyricsTranslator : TranslationEngineUi {
 
         Log.d(TAG, "detected source language=$source target=$target")
 
-        if (source == target) {
-            Log.d(TAG, "skip: source already matches target language=$target")
+        if (TranslationLanguages.baseLanguage(source) == TranslationLanguages.baseLanguage(target)) {
+            Log.d(TAG, "skip: source already matches target base language=$target")
             // The legacy enum name is retained until the Settings/status UI stage.
             updateState(
                 Phase.ALREADY_ENGLISH,

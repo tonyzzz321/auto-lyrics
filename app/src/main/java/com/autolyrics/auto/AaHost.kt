@@ -1,6 +1,7 @@
 package com.autolyrics.auto
 
 import android.content.SharedPreferences
+import com.autolyrics.util.AaKaraokeRows
 import java.security.MessageDigest
 
 /**
@@ -15,6 +16,17 @@ object AaHost {
 
     /** Global (pre-per-car) edge default; also seeds each car on sight. */
     const val EDGE_PREF_KEY = "aa_karaoke_edge"
+
+    /** Resolved column cache: the edge delta is a nudge against the column
+     *  MODEL, so any release that changes the model (icon-size derivation,
+     *  clamp, margin) would silently move a calibrated car's right edge at
+     *  the same pref value. The resolved column is therefore PINNED per
+     *  fingerprint at calibration time; upgrades cannot re-base it, only
+     *  moving the knob (or a reset) recomputes. */
+    const val COLUMN_PREF_KEY = "aa_karaoke_column"
+
+    /** Fallback column when a host sends no BrowserIconSize hint. */
+    const val DEFAULT_COLUMN = 42
 
     /** Fingerprint of the connected host's root hints; null when no
      *  hints have arrived for the current connection. */
@@ -41,10 +53,37 @@ object AaHost {
         return prefs.getInt("$EDGE_PREF_KEY:$fingerprint", global)
     }
 
-    fun putEdge(prefs: SharedPreferences, value: Int) {
+    /**
+     * The live board column: the pinned per-car resolution when one exists
+     * (immune to column-model upgrades shipped after the calibration),
+     * otherwise computed from the current model and pinned for the car.
+     * Hint-less hosts (no fingerprint) keep the plain delta read: there is
+     * no identity to pin a column to.
+     */
+    fun column(prefs: SharedPreferences, iconPx: Int, fallbackColumn: Int = DEFAULT_COLUMN): Int {
+        val fingerprint = fingerprint ?: return AaKaraokeRows.columnFromIconSize(
+            iconPx, globalEdge(prefs), fallbackColumn
+        )
+        val key = "$COLUMN_PREF_KEY:$fingerprint"
+        prefs.getInt(key, -1).takeIf { it > 0 }?.let { return it }
+        val column = AaKaraokeRows.columnFromIconSize(iconPx, edge(prefs), fallbackColumn)
+        prefs.edit().putInt(key, column).apply()
+        return column
+    }
+
+    fun putEdge(prefs: SharedPreferences, value: Int, iconPx: Int = -1) {
         val fingerprint = fingerprint
         val key = if (fingerprint == null) EDGE_PREF_KEY else "$EDGE_PREF_KEY:$fingerprint"
         prefs.edit().putInt(key, value).apply()
+        // Moving the knob RE-resolves the column under the current model:
+        // the user is tuning against what this build renders, and the new
+        // resolution is what stays pinned from now on.
+        if (fingerprint != null && iconPx > 0) {
+            prefs.edit().putInt(
+                "$COLUMN_PREF_KEY:$fingerprint",
+                AaKaraokeRows.columnFromIconSize(iconPx, value, DEFAULT_COLUMN)
+            ).apply()
+        }
     }
 
     /** Global default edge (the value a car without its own calibration
@@ -61,6 +100,10 @@ object AaHost {
     fun resetEdge(prefs: SharedPreferences, fingerprint: String?) {
         val editor = prefs.edit().putInt(EDGE_PREF_KEY, 0)
         if (fingerprint != null) editor.putInt("$EDGE_PREF_KEY:$fingerprint", 0)
+        // Drop the pinned resolutions too: a reset must hand control back
+        // to the CURRENT model, not resurrect a stale pinned column.
+        editor.remove(COLUMN_PREF_KEY)
+        if (fingerprint != null) editor.remove("$COLUMN_PREF_KEY:$fingerprint")
         editor.apply()
     }
 

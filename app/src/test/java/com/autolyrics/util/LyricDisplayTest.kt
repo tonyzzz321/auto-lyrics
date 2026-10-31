@@ -103,4 +103,56 @@ class LyricDisplayTest {
         assertEquals("\u266A", LyricDisplay.countdownSymbol(0))
         assertEquals("\u266A\u3000\u266A", LyricDisplay.countdownSymbol(2))
     }
+
+    @Test
+    fun leadingTitleArtistHeadersAreStripped() {
+        fun lines(vararg texts: String) = texts.map { LyricLine(0L, it) }
+        fun texts(lines: List<LyricLine>) = lines.map { it.text }
+
+        // Joined single-line shapes: every dash/slash/spacing spelling collapses.
+        assertEquals(
+            listOf("犹如巡行和汇演"),
+            texts(LyricDisplay.stripTitleArtistHeaders(
+                lines("側面 - 張國榮", "犹如巡行和汇演"), "側面", "張國榮"
+            ))
+        )
+        assertEquals(
+            listOf("第一行"),
+            texts(LyricDisplay.stripTitleArtistHeaders(
+                lines("张国荣 侧面", "第一行"), "侧面", "张国荣"
+            ))
+        )
+        // Fullwidth Latin and labeled forms.
+        assertEquals(
+            listOf("第一行"),
+            texts(LyricDisplay.stripTitleArtistHeaders(
+                lines("歌曲：Ｃｏｎｎｅｃｔ　歌手：ＣｌａｒｉＳ", "第一行"), "Connect", "ClariS"
+            ))
+        )
+        // Adjacent standalone title/artist pair.
+        assertEquals(
+            listOf("第一行"),
+            texts(LyricDisplay.stripTitleArtistHeaders(
+                lines("コネクト", "ClariS", "第一行"), "コネクト", "ClariS"
+            ))
+        )
+        // A title-equal sung hook is REAL lyrics: kept unless the artist sits
+        // right next to it or the full label pattern fires.
+        assertEquals(
+            listOf("Hello"),
+            texts(LyricDisplay.stripTitleArtistHeaders(lines("Hello"), "Hello", "Adele"))
+        )
+        // Deep in the payload nothing is ever dropped (window is leading-only).
+        assertEquals(
+            listOf("a", "b", "c", "Hello", "Adele"),
+            texts(LyricDisplay.stripTitleArtistHeaders(
+                lines("a", "b", "c", "Hello", "Adele"), "Hello", "Adele"
+            ))
+        )
+        // Metadata-free context can never filter.
+        assertEquals(
+            listOf("Connect", "ClariS"),
+            texts(LyricDisplay.stripTitleArtistHeaders(lines("Connect", "ClariS"), "", ""))
+        )
+    }
 }

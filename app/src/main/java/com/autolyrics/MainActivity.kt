@@ -12,7 +12,10 @@ import android.os.Bundle
 import android.provider.Settings
 import android.text.SpannableStringBuilder
 import android.text.Spanned
+import android.graphics.Canvas
+import android.graphics.Paint
 import android.text.style.ForegroundColorSpan
+import android.text.style.LeadingMarginSpan
 import android.text.style.RelativeSizeSpan
 import android.text.style.StyleSpan
 import android.util.TypedValue
@@ -69,6 +72,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var fontSettingsPanel: LinearLayout
     private lateinit var tvFontSize: TextView
     private lateinit var switchAaKaraoke: SwitchCompat
+    private lateinit var switchKaraokeRows: SwitchCompat
     private lateinit var switchTranslation: SwitchCompat
     private lateinit var tvAaDelay: TextView
     private lateinit var btnAaDelayReset: Button
@@ -248,6 +252,18 @@ class MainActivity : AppCompatActivity() {
 
         switchAaKaraoke.setOnCheckedChangeListener { _, isChecked ->
             prefs.edit().putBoolean("aa_karaoke_enabled", isChecked).apply()
+        }
+
+        // Karaoke board row height without translations: single compact rows
+        // vs the constant-height grid (LyricsBrowserService reads the pref).
+        switchKaraokeRows = findViewById(R.id.switch_karaoke_rows)
+        switchKaraokeRows.isChecked = prefs.getBoolean(
+            LyricsBrowserService.AA_KARAOKE_SINGLE_LINE_KEY, false
+        )
+        switchKaraokeRows.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit()
+                .putBoolean(LyricsBrowserService.AA_KARAOKE_SINGLE_LINE_KEY, isChecked)
+                .apply()
         }
 
         switchTranslation = findViewById(R.id.switch_translation)
@@ -504,7 +520,7 @@ class MainActivity : AppCompatActivity() {
         com.autolyrics.auto.AaHost.resetEdge(prefs, com.autolyrics.auto.AaHost.fingerprint)
         updateKaraokeEdgeDisplay()
         showUndoSnackbar("Karaoke edge reset") {
-            com.autolyrics.auto.AaHost.putEdge(prefs, previous)
+            com.autolyrics.auto.AaHost.putEdge(prefs, previous, com.autolyrics.auto.AaHost.iconSizePx)
             prefs.edit().putInt(com.autolyrics.auto.AaHost.EDGE_PREF_KEY, previousGlobal)
                 .apply()
             updateKaraokeEdgeDisplay()
@@ -515,7 +531,7 @@ class MainActivity : AppCompatActivity() {
         val current = com.autolyrics.auto.AaHost.edge(prefs)
         val updated = (current + delta).coerceIn(-16, 16)
         if (updated == current) return
-        com.autolyrics.auto.AaHost.putEdge(prefs, updated)
+        com.autolyrics.auto.AaHost.putEdge(prefs, updated, com.autolyrics.auto.AaHost.iconSizePx)
         updateKaraokeEdgeDisplay()
     }
 
@@ -630,6 +646,46 @@ class MainActivity : AppCompatActivity() {
     private fun dp(value: Int): Int =
         (value * resources.displayMetrics.density).toInt()
 
+    /**
+     * Constant leading gutter for one lyric row (lyric line + optional
+     * translation subline). The gutter width is IDENTICAL for every row and
+     * the ▶ is painted into it — never flowed — so gravity=center_horizontal
+     * centers all lyric text on one true axis regardless of marker state.
+     */
+    private class LyricMarkerGutter(
+        private val marginPx: Int,
+        private val drawMarker: Boolean,
+        private val lyricAnchor: Int,
+        private val markerColor: Int
+    ) : LeadingMarginSpan {
+        override fun getLeadingMargin(first: Boolean) = marginPx
+
+        override fun drawLeadingMargin(
+            c: Canvas,
+            p: Paint,
+            x: Int,
+            dir: Int,
+            top: Int,
+            baseline: Int,
+            bottom: Int,
+            text: CharSequence?,
+            start: Int,
+            end: Int,
+            first: Boolean,
+            layout: android.text.Layout?
+        ) {
+            // The gutter spans the whole row; only the lyric line (the one
+            // that starts at the anchor) wears the marker, never the
+            // translation subline.
+            if (!drawMarker || start != lyricAnchor) return
+            val previous = p.color
+            p.color = markerColor
+            c.drawText("▶", x.toFloat() + dir * marginPx * 0.5f - p.measureText("▶") / 2f,
+                baseline.toFloat(), p)
+            p.color = previous
+        }
+    }
+
     private fun renderSyncedLyrics(state: LyricsState) {
         val ssb = SpannableStringBuilder()
         val colors = state.albumColors
@@ -644,18 +700,20 @@ class MainActivity : AppCompatActivity() {
         // scroll exactly like lyric rows.
         val rows = SungLine.virtualRows(state.lines, state.lines.size)
         val curV = SungLine.currentVIndex(rows, state.lines, positionMs)
+        // The ▶ marker lives in a fixed leading GUTTER (drawn, not flowed):
+        // flowed prefixes ("▶  " vs "    ") center at different widths per
+        // line, so the centered block sat visibly off-center and the current
+        // line jogged. Every row — lyrics, translations, markers — reserves
+        // the identical gutter, so all text centers on the true view axis.
+        val gutterPx = Math.ceil(
+            tvLyrics.paint.measureText("▶  ").toDouble()
+        ).toInt() + dp(4)
         rows.forEachIndexed { v, row ->
             val line = if (row.isGap) null else state.lines[row.realIndex]
             val isPastLine = curV >= 0 && v < curV
             val isCurrentLine = v == curV
             val isFutureLine = curV < 0 || v > curV
             val lineStart = ssb.length
-
-            if (isCurrentLine) {
-                ssb.append("▶  ")
-            } else {
-                ssb.append("    ")
-            }
 
             val lyricStart = ssb.length
             ssb.append(line?.let { LyricDisplay.displayText(it.text) } ?: LyricDisplay.MUSIC_SYMBOL)
@@ -736,7 +794,7 @@ class MainActivity : AppCompatActivity() {
             if (!translatedLine.isNullOrBlank()) {
                 ssb.append("\n")
                 val tlStart = ssb.length
-                ssb.append("    $translatedLine")
+                ssb.append(translatedLine)
                 ssb.setSpan(
                     RelativeSizeSpan(0.8f),
                     tlStart, ssb.length,
@@ -749,9 +807,18 @@ class MainActivity : AppCompatActivity() {
                 )
             }
 
+            ssb.setSpan(
+                LyricMarkerGutter(gutterPx, isCurrentLine, lyricStart, highlightColor),
+                lineStart, ssb.length,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+
             ssb.append("\n\n")
         }
 
+        // paddingEnd swallows the gutter's half-width line-box shift, so the
+        // text column is centered on the VIEW, not on the gutted box.
+        tvLyrics.setPadding(dp(20), dp(20), dp(20) + gutterPx, dp(20))
         tvLyrics.text = ssb
 
         if (curV != lastScrolledIndex && curV >= 0) {

@@ -109,6 +109,75 @@ internal object LyricDisplay {
     fun stripNonLyric(lines: List<LyricLine>): List<LyricLine> =
         lines.filterNot { isSymbolText(it.text) || isCreditLine(it.text) }
 
+    /**
+     * Metadata-aware ingest filter: SyncLRC's aggregated sources (NetEase/QQ-
+     * family uploads) sometimes ship the track's OWN title/artist as the
+     * first "lyric" line — "側面 - 張國榮", "歌曲：X 歌手：Y", or an adjacent
+     * title-then-artist pair. Undetectable without track context, so it runs
+     * once per load in MediaTracker.prepared (cache hit, race winner and
+     * manual apply all pass through it) rather than in the context-free
+     * [stripNonLyric]. Only LEADING lines qualify, and only when the FULL
+     * title and artist both appear: a sung hook that merely equals the title
+     * ("Hello") is real lyrics, a leading line spelling title+artist
+     * verbatim is not a lyric. Never persisted — like the Chinese form
+     * conversion, the cache keeps the provider's original bytes.
+     */
+    fun stripTitleArtistHeaders(
+        lines: List<LyricLine>,
+        title: String?,
+        artist: String?
+    ): List<LyricLine> {
+        val nt = headerKey(title.orEmpty())
+        val na = headerKey(artist.orEmpty())
+        if (nt.length < 2 || na.length < 2) return lines
+        val window = minOf(TITLE_HEADER_WINDOW, lines.size)
+        fun key(i: Int): String = headerKey(lines[i].text)
+        val drop = BooleanArray(lines.size)
+        for (i in 0 until window) {
+            val n = key(i)
+            if (n.isEmpty() || drop[i]) continue
+            if (n == nt + na || n == na + nt) {
+                drop[i] = true
+                continue
+            }
+            if (n.contains(nt) && n.contains(na) &&
+                lines[i].text.trim().length <= nt.length + na.length + 16 &&
+                HEADER_LABELS.any { n.contains(it) }
+            ) {
+                drop[i] = true
+                continue
+            }
+            // Adjacent standalone pair: one line IS the title, the next IS
+            // the artist (either order). Exact on both, so a title-equal
+            // hook alone is never dropped.
+            if (i + 1 < window &&
+                (n == nt && key(i + 1) == na || n == na && key(i + 1) == nt)
+            ) {
+                drop[i] = true
+                drop[i + 1] = true
+            }
+        }
+        return if (drop.none { it }) lines else lines.filterIndexed { i, _ -> !drop[i] }
+    }
+
+    /** Lowercase, fullwidth-ASCII folded, letters+digits only: spaces and
+     * every dash/slash/bracket/colon spelling of a header collapse away. */
+    private fun headerKey(text: String): String =
+        text.lowercase().map { c ->
+            if (c in '\uFF01'..'\uFF5E') (c - 0xFEE0) else c
+        }.filter { it.isLetterOrDigit() }.joinToString("")
+
+    private const val TITLE_HEADER_WINDOW = 3
+
+    /** Words that mark a leading title/artist line as a labeled header
+     * ("歌曲：X 歌手：Y"). Substring-checked on the header key, so they must
+     * be long enough to never survive inside plausible sung text alongside
+     * both names. */
+    private val HEADER_LABELS = setOf(
+        "歌曲", "歌名", "曲名", "標題", "标题", "歌手", "演唱", "主唱", "演唱",
+        "singer", "song", "title", "artist", "vocals"
+    )
+
     private const val CREDIT_LABEL_MAX_LEN = 14
 
     /** Labels accepted before a colon in a credit line ("词：林夕",

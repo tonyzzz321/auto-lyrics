@@ -98,7 +98,9 @@ class TranslationTargetView @JvmOverloads constructor(
                 TranslationLanguages.DEFAULT_TARGET_LANGUAGE
             )
         )
-        targetText.text = TranslationLanguages.displayName(target)
+        // Selected-row value stays a compact English name; the native tail
+        // belongs to the picker entries only.
+        targetText.text = TranslationLanguages.englishName(target)
 
         val translationEnabled = prefs.getBoolean(TRANSLATION_ENABLED_KEY, true)
         isEnabled = translationEnabled

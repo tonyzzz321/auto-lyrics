@@ -86,6 +86,34 @@ internal object SungLine {
         return kotlin.math.ceil((remaining - DISPLAY_LEAD_MS) / 1000.0).toInt().coerceIn(1, 4)
     }
 
+    /**
+     * Countdown for the marker row at [v]: it counts toward the line that
+     * FOLLOWS the marker, never toward the first future line overall. With
+     * two markers on screen (current intro, previewed interlude) the shared
+     * first-future target made them tick in lockstep.
+     */
+    fun markerCountdownSeconds(
+        rows: List<VRow>,
+        v: Int,
+        lines: List<LyricLine>,
+        posMs: Long
+    ): Int {
+        val target = rows.asSequence().drop(v + 1)
+            .firstOrNull { !it.isGap }
+            ?.let { lines.getOrNull(it.realIndex)?.timeMs }
+            ?: return 4
+        return kotlin.math.ceil((target - posMs - DISPLAY_LEAD_MS) / 1000.0)
+            .toInt().coerceIn(1, 4)
+    }
+
+    /**
+     * The row the card previews after the row at [v]: NEVER skipping a row,
+     * because a marker is a row of the sequence exactly like a lyric - when
+     * an instrumental comes next, the marker (its glyph row) is the preview.
+     * Null only past the last row.
+     */
+    fun previewSuccessor(rows: List<VRow>, v: Int): VRow? = rows.getOrNull(v + 1)
+
     /** Last line whose start has passed, or -1 before the first line. */
     fun rawIndex(lines: List<LyricLine>, posMs: Long): Int {
         var idx = -1

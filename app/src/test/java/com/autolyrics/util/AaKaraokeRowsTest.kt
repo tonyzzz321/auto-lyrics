@@ -84,12 +84,32 @@ class AaKaraokeRowsTest {
     }
 
     @Test
-    fun `marker prefixes padded text`() {
+    fun `marker rides inside the padding so the right edge holds`() {
         val padded = AaKaraokeRows.rightAlign("あい", 8, "▶  ")
-        assertEquals("▶  \u3000\u3000あい", padded)
+        assertEquals(" ▶  あい", padded)
+        assertEquals(8, AaKaraokeRows.displayWidth(padded))
     }
 
     @Test
+    fun `active short line stays right-justified to the column`() {
+        val column = 32
+        val padded = AaKaraokeRows.rightAlign("オンナノコは目線ひとつ", column, "▶  ")
+        assertEquals(column, AaKaraokeRows.displayWidth(padded))
+    }
+
+    @Test
+    fun `markerFor keeps the full marker when it fits the column`() {
+        assertEquals("▶  ", AaKaraokeRows.markerFor(true, "あい", 12, "▶  "))
+    }
+
+    fun `markerFor compacts the marker when the full one would force a wrap`() {
+        assertEquals("▶", AaKaraokeRows.markerFor(true, "あい", 6, "▶  "))
+    }
+
+    fun `markerFor drops the marker on inactive rows`() {
+        assertEquals("", AaKaraokeRows.markerFor(false, "あい", 12, "▶  "))
+    }
+
     fun `mixed script lines stay aligned by width units`() {
         val top = "Hey! 君も"
         val bottom = "ここ"

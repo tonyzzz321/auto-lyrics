@@ -53,17 +53,32 @@ internal object AaKaraokeRows {
     }
 
     /**
-     * Pad [text] with leading fullwidth (2-unit) and halfwidth (1-unit) spaces
-     * so its right edge approximates the right edge of a reference line of
-     * [referenceWidth] units. Android Auto browse rows only render
-     * left-aligned text, so visual right-justification is emulated; when the
-     * text is already wider than the reference it is returned untouched.
+     * Pick the active-line [marker] that fits the board column: the full
+     * marker (marker + spacing + text within [column]) or a compact
+     * single-glyph one when the full marker would push the padded string past
+     * the column and force the row to wrap.
      */
-    fun rightAlign(text: String, referenceWidth: Int, marker: String = ""): String {
-        val pad = referenceWidth - displayWidth(text)
+    fun markerFor(active: Boolean, text: String, column: Int, full: String): String {
+        if (!active) return ""
+        val compact = full.trimEnd()
+        return if (displayWidth(text) + displayWidth(full) <= column) full else compact
+    }
+
+    /**
+     * Pad [text] with leading fullwidth (2-unit) and halfwidth (1-unit) spaces
+     * so its right edge sits at a fixed [columnWidth]-unit column. Android
+     * Auto browse rows only render left-aligned text and wrap (never shrink)
+     * past the row width, so the column must stay under the row's capacity —
+     * the Sync tab's edge rows calibrate it per screen. The [marker] (if any)
+     * rides inside the padding, immediately before the text, so it never
+     * occupies the left margin or shifts the right edge. Text already wider
+     * than the column is returned untouched (it fills the row by itself).
+     */
+    fun rightAlign(text: String, columnWidth: Int, marker: String = ""): String {
+        val pad = columnWidth - displayWidth(text) - displayWidth(marker)
         if (pad <= 0) return marker + text
         val fullwidth = "\u3000".repeat(pad / 2)
         val halfwidth = " ".repeat(pad % 2)
-        return marker + fullwidth + halfwidth + text
+        return fullwidth + halfwidth + marker + text
     }
 }

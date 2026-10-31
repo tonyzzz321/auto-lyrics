@@ -22,7 +22,7 @@ Auto Lyrics is an Android app that follows the active media session and displays
 - **Phone companion UI** — lyrics remain available on the phone, including the performance/karaoke view with translated sublines.
 - **Local cache** — normal and Karaoke selections use separate cache variants; word timestamps and explicit word end times are preserved. Entries are permanent; applying a Manual Search result is the only refresh path.
 - **Dual translation engines** — on-device ML Kit, or any OpenAI-compatible remote LLM endpoint (model dropdown fed by the endpoint's `/models` route; API key optional).
-- **Persistent translation cache** — translated lines are stored per track, target language, and lyric-text hash, so replays skip detection and network entirely; applying a Manual Search result forces retranslation.
+- **Persistent translation cache** — translated lines are stored per track, target language, and lyric-text hash, so replays skip detection and network entirely; applying a Manual Search result or tapping **Redo** on the translation status line forces retranslation.
 - **Manual lyrics search** — main-screen button opens a dialog with editable song/artist terms; pick any result (Karaoke / Synced / Plain, with its duration vs the playing track) to override automatic resolution.
 
 ## Architecture

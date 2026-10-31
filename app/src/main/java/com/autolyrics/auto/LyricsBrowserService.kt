@@ -14,6 +14,8 @@ import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
 import androidx.media.MediaBrowserServiceCompat
+import com.autolyrics.lyrics.LlmTranslator
+import com.autolyrics.lyrics.LyricsTranslator
 import com.autolyrics.lyrics.TranslationLanguages
 import com.autolyrics.media.MediaTracker
 import com.autolyrics.model.LyricLine
@@ -50,6 +52,7 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
     private var lastAlbumArt: Bitmap? = null
 
     private var aaOffsetMs = 0L
+    private var karaokeEdge = 0
 
     // Minimum display time for changing chunks on the compact now-playing card.
     private val titleChunkHold = ChunkHold(MIN_CHUNK_DISPLAY_MS)
@@ -60,6 +63,10 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
             when (key) {
                 "aa_offset_ms" -> {
                     aaOffsetMs = sp.getLong(key, 0L)
+                    forceRefresh()
+                }
+                "aa_karaoke_edge" -> {
+                    karaokeEdge = sp.getInt(key, 0)
                     forceRefresh()
                 }
                 TranslationLanguages.TARGET_LANGUAGE_PREF_KEY,
@@ -78,6 +85,9 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         private const val MORE_MENU_ID = "more_menu"
         private const val SYNC_MINUS_ID = "sync_minus"
         private const val SYNC_PLUS_ID = "sync_plus"
+        private const val KARAOKE_EDGE_MINUS_ID = "karaoke_edge_minus"
+        private const val KARAOKE_EDGE_PLUS_ID = "karaoke_edge_plus"
+        private const val KARAOKE_EDGE_STEP = 2
         private const val SYNC_STEP_MS = 50L
         private const val SYNC_WINDOW_SIZE = 3
         private const val DEFAULT_WINDOW_SIZE = 5
@@ -89,6 +99,15 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         // gives an effective indent of about 1.8em without changing Now Playing.
         private const val TRANSLATION_SUBTITLE_PREFIX = "\u2003\u2002\u2004"
         private const val PAD_WIDTH = 60
+        // Default right-edge column for the Karaoke tab's right-justified row,
+        // in display units (CJK = 2). Rows wrap (never shrink) past their
+        // width, so the true column is screen-dependent and beyond what the
+        // phone can know: this default suits a Desktop Head Unit row, and the
+        // Sync tab's edge rows calibrate it per car. Padded width must stay
+        // under the row's capacity or the row wraps to invisible space lines.
+        private const val KARAOKE_COLUMN_DEFAULT = 42
+        private const val NO_LYRICS_MESSAGE = "No lyrics found for this track"
+        private const val TRANSLATION_LOADING_MESSAGE = "Loading translation…"
         private const val NOTIFY_THROTTLE_MS = 500L
         private const val SESSION_REFRESH_MS = 1500L
         private const val PLAIN_LOOP_DELAY_MS = 2000L
@@ -115,6 +134,7 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
 
         val prefs = getSharedPreferences("auto_lyrics_prefs", MODE_PRIVATE)
         aaOffsetMs = prefs.getLong("aa_offset_ms", 0L)
+        karaokeEdge = prefs.getInt("aa_karaoke_edge", 0)
         prefs.registerOnSharedPreferenceChangeListener(prefsListener)
 
         mediaSession = MediaSessionCompat(this, "AutoLyrics").apply {
@@ -197,7 +217,7 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
             KARAOKE_MENU_ID -> buildKaraokeMenu(state, items)
             SYNC_MENU_ID -> buildSyncMenu(state, items)
             MORE_MENU_ID -> buildMoreMenu(state, items)
-            SYNC_MINUS_ID, SYNC_PLUS_ID -> Unit
+            SYNC_MINUS_ID, SYNC_PLUS_ID, KARAOKE_EDGE_MINUS_ID, KARAOKE_EDGE_PLUS_ID -> Unit
         }
 
         result.sendResult(items)
@@ -268,9 +288,12 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         items: MutableList<MediaBrowserCompat.MediaItem>
     ) {
         if (state.status != LyricsStatus.FOUND || state.lines.isEmpty()) {
-            items.add(buildTextItem("karaoke_hold", "\u266A"))
+            // Without word-timed lines there is no board to build: mirror the
+            // Lyrics tab exactly (plain-text window, loading, not-found).
+            buildLyricsMenu(state, items)
             return
         }
+        val column = karaokeColumn()
 
         val posMs = getAaPositionMs()
         val idx = findLineIndex(state.lines, posMs).coerceAtLeast(0)
@@ -283,7 +306,7 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         val topText = topLine?.text?.ifBlank { "\u266A" } ?: "\u266A"
         val bottomText = bottomLine?.text?.ifBlank { "\u266A" } ?: "\u266A"
 
-        val topMarker = if (topActive) CURRENT_LINE_PREFIX else ""
+        val topMarker = if (topActive) CURRENT_LINE_PREFIX else IDLE_LINE_PREFIX
         val topId = if (topIdx >= 0) "line_$topIdx" else "karaoke_hold"
         items.add(
             buildTextItem(
@@ -293,16 +316,34 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
             )
         )
 
-        val bottomMarker = if (bottomActive) CURRENT_LINE_PREFIX else ""
+        val bottomMarker = AaKaraokeRows.markerFor(
+            bottomActive,
+            bottomText,
+            column,
+            CURRENT_LINE_PREFIX
+        )
         val bottomId = if (bottomIdx >= 0) "line_$bottomIdx" else "karaoke_hold"
+        val bottomTranslation = bottomLine?.let {
+            state.translatedLines?.getOrNull(bottomIdx)?.takeIf { t -> t.isNotBlank() }
+        }
         items.add(
             buildTextItem(
                 bottomId,
-                AaKaraokeRows.rightAlign(bottomText, AaKaraokeRows.displayWidth(topText), bottomMarker),
-                subtitle = bottomLine?.let { state.translatedLines?.getOrNull(bottomIdx)?.takeIf { t -> t.isNotBlank() } }
+                AaKaraokeRows.rightAlign(bottomText, column, bottomMarker),
+                // Same column for the subtitle so its right edge holds with
+                // the lyric line above it (the invisible gutter buildTextItem
+                // prepends widens the string a little; the subtitle font is
+                // smaller, so the row still fits one line).
+                subtitle = bottomTranslation?.let {
+                    AaKaraokeRows.rightAlign(it, column)
+                }
             )
         )
     }
+
+    /** Right-edge column of the Karaoke board after per-car edge calibration. */
+    private fun karaokeColumn(): Int =
+        (KARAOKE_COLUMN_DEFAULT + karaokeEdge).coerceIn(24, 64)
 
     private fun buildSyncMenu(
         state: LyricsState,
@@ -310,15 +351,18 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
     ) {
         val sign = if (aaOffsetMs >= 0) "+" else ""
         items.add(buildTextItem("sync_offset", "AA Offset: ${sign}${aaOffsetMs}ms"))
-        items.add(
-            buildTextItem(
-                SYNC_MINUS_ID,
-                "◀◀  Delay lyrics",
-                subtitle = "−${SYNC_STEP_MS} ms"
-            )
-        )
-
+        if (state.status == LyricsStatus.NOT_FOUND) {
+            items.add(buildTextItem("sync_not_found", NO_LYRICS_MESSAGE))
+        }
         if (state.lines.isNotEmpty()) {
+            items.add(
+                buildTextItem(
+                    SYNC_MINUS_ID,
+                    "◀◀  Delay lyrics",
+                    subtitle = "−${SYNC_STEP_MS} ms"
+                )
+            )
+
             val posMs = getAaPositionMs()
             val idx = if (state.status == LyricsStatus.FOUND) {
                 findLineIndex(state.lines, posMs).coerceAtLeast(0)
@@ -330,9 +374,9 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
                 } else 0
             }
 
-            val half = SYNC_WINDOW_SIZE / 2
-            val windowStart = maxOf(0, idx - half)
-            val windowEnd = minOf(state.lines.size, windowStart + SYNC_WINDOW_SIZE)
+            // Current line pinned first: the window reads forward from the line
+            // being sung (full window retained near the song end).
+            val windowEnd = minOf(state.lines.size, idx + SYNC_WINDOW_SIZE)
             val adjustedStart = maxOf(0, windowEnd - SYNC_WINDOW_SIZE)
 
             for (i in adjustedStart until windowEnd) {
@@ -349,15 +393,26 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
                     )
                 )
             }
+
+            items.add(
+                buildTextItem(
+                    SYNC_PLUS_ID,
+                    "▶▶  Advance lyrics",
+                    subtitle = "+${SYNC_STEP_MS} ms"
+                )
+            )
         }
 
-        items.add(
-            buildTextItem(
-                SYNC_PLUS_ID,
-                "▶▶  Advance lyrics",
-                subtitle = "+${SYNC_STEP_MS} ms"
+        if (state.status == LyricsStatus.FOUND) {
+            val columnNote = "right column: ${karaokeColumn()}"
+            items.add(
+                buildTextItem(KARAOKE_EDGE_MINUS_ID, "◀  Karaoke edge", subtitle = columnNote)
             )
-        )
+            items.add(
+                buildTextItem(KARAOKE_EDGE_PLUS_ID, "▶  Karaoke edge", subtitle = columnNote)
+            )
+        }
+
     }
 
     private fun buildMoreMenu(
@@ -537,26 +592,11 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
     }
 
     private fun lyricsTypeLabel(state: LyricsState): String {
-        val provider = state.source
-            .substringBefore("·")
-            .substringBefore("(")
-            .trim()
-        val providerSuffix = if (provider.isNotBlank()) " · $provider" else ""
-        val sourceLanguage = TranslationLanguages.normalizeLanguageTag(state.detectedLanguage)
-        val languageSuffix = if (sourceLanguage != null) {
-            if (state.translatedLines != null) {
-                " · ${sourceLanguage.uppercase()}→${selectedTranslationTarget().uppercase()}"
-            } else {
-                " · ${sourceLanguage.uppercase()}"
-            }
-        } else {
-            ""
-        }
-
+        // Header carries only the not-synced warning: provider, the "Synced"
+        // confirmation and language info all live on the More tab.
         return when (state.status) {
-            LyricsStatus.FOUND -> "⟳ Synced$providerSuffix$languageSuffix"
-            LyricsStatus.PLAIN_ONLY -> "⟳ Not synced$providerSuffix$languageSuffix"
-            else -> "⟳ Sync"
+            LyricsStatus.PLAIN_ONLY -> "⟳ Not synced"
+            else -> ""
         }
     }
 
@@ -608,7 +648,7 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
     private fun getCardText(state: LyricsState): CardText {
         getLyricCardText(state)?.let { return it }
 
-        val subtitle = when (state.status) {
+        var subtitle = when (state.status) {
             // Intro: preview the first line while the title still shows the track.
             LyricsStatus.FOUND -> state.lines.firstOrNull()?.text.orEmpty()
             LyricsStatus.LOADING -> "Loading lyrics…"
@@ -616,7 +656,33 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
             LyricsStatus.ERROR -> "Error loading lyrics"
             else -> ""
         }
+        if (state.status == LyricsStatus.FOUND && translationInFlight()) {
+            subtitle = TRANSLATION_LOADING_MESSAGE
+        }
         return CardText(null, subtitle)
+    }
+
+    /**
+     * True while the selected engine is actively working on a translation
+     * (detect, model download, or translate). The now-playing subtitle mirrors
+     * the "Loading lyrics…" UX with "Loading translation…" while this holds.
+     */
+    private fun translationInFlight(): Boolean {
+        val prefs = getSharedPreferences("auto_lyrics_prefs", MODE_PRIVATE)
+        if (!prefs.getBoolean("translation_enabled", true)) return false
+        val engine = if (prefs.getString(LlmTranslator.PREF_ENGINE_KEY, "on_device") == LlmTranslator.ENGINE_LLM) {
+            LlmTranslator
+        } else {
+            LyricsTranslator
+        }
+        return when (engine.uiState.value.phase) {
+            LyricsTranslator.Phase.DETECTING_LANGUAGE,
+            LyricsTranslator.Phase.CHECKING_MODEL,
+            LyricsTranslator.Phase.DOWNLOADING_MODEL,
+            LyricsTranslator.Phase.WAITING_FOR_SYSTEM,
+            LyricsTranslator.Phase.TRANSLATING -> true
+            else -> false
+        }
     }
 
     private fun getLyricCardText(state: LyricsState): CardText? {
@@ -678,10 +744,13 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         val budget = TITLE_MAX_WIDTH
         val displayLine = line.text.ifBlank { line.words.joinToString(" ") { it.text } }
         val chunkTexts = NowPlayingText.chunkDisplayText(displayLine, budget)
+        val loadingTranslation = translationChunk == null && translationInFlight()
+
         if (chunkTexts.isEmpty()) {
             return CardText(
                 NowPlayingText.END_MARK,
-                NowPlayingText.subtitleFor(emptyList(), 0, translationChunk, nextText)
+                if (loadingTranslation) TRANSLATION_LOADING_MESSAGE
+                else NowPlayingText.subtitleFor(emptyList(), 0, translationChunk, nextText)
             )
         }
 
@@ -692,7 +761,9 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         val chunkIdx = selectedChunk.coerceIn(0, chunkTexts.lastIndex)
 
         val title = chunkTexts[chunkIdx]
-        return CardText(title, NowPlayingText.subtitleFor(chunkTexts, chunkIdx, translationChunk, nextText))
+        val subtitle = if (loadingTranslation) TRANSLATION_LOADING_MESSAGE
+        else NowPlayingText.subtitleFor(chunkTexts, chunkIdx, translationChunk, nextText)
+        return CardText(title, subtitle)
     }
 
     // --- MediaSession management ---
@@ -976,6 +1047,15 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
                 else aaOffsetMs += SYNC_STEP_MS
                 getSharedPreferences("auto_lyrics_prefs", MODE_PRIVATE)
                     .edit().putLong("aa_offset_ms", aaOffsetMs).apply()
+                notifyBrowseSections()
+                return
+            }
+
+            if (mediaId == KARAOKE_EDGE_MINUS_ID || mediaId == KARAOKE_EDGE_PLUS_ID) {
+                val delta = if (mediaId == KARAOKE_EDGE_MINUS_ID) -KARAOKE_EDGE_STEP else KARAOKE_EDGE_STEP
+                karaokeEdge = (karaokeEdge + delta).coerceIn(-18, 22)
+                getSharedPreferences("auto_lyrics_prefs", MODE_PRIVATE)
+                    .edit().putInt("aa_karaoke_edge", karaokeEdge).apply()
                 notifyBrowseSections()
                 return
             }

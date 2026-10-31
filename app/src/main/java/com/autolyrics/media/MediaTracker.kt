@@ -909,6 +909,24 @@ class MediaTracker private constructor(context: Context) {
         return true
     }
 
+    /**
+     * Drops the cached translation for the playing track's current lyrics and
+     * target language, then re-runs translation. Manual Search apply remains
+     * the only way to redo lyrics; this is the translation-side shortcut.
+     */
+    fun resetTranslationForCurrentTrack(): Boolean {
+        val state = _state.value
+        val track = state.track ?: return false
+        val lines = state.lines
+        if (state.status != LyricsStatus.FOUND || lines.isEmpty()) return false
+        translationJob?.cancel()
+        translationCache.delete(track, lines, selectedTargetLanguage())
+        _state.value = state.copy(translatedLines = null, detectedLanguage = null)
+        resetTranslationUiState()
+        translateIfNeeded(lines, track)
+        return true
+    }
+
     private fun handleKaraokePreferenceChanged() {
         val track = _state.value.track ?: return
         translationJob?.cancel()

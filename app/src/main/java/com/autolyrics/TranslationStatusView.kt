@@ -24,6 +24,7 @@ import com.autolyrics.lyrics.LlmTranslator
 import com.autolyrics.lyrics.LyricsTranslator
 import com.autolyrics.lyrics.TranslationEngineUi
 import com.autolyrics.lyrics.TranslationLanguages
+import com.autolyrics.media.MediaTracker
 import com.google.android.material.progressindicator.LinearProgressIndicator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -67,6 +68,22 @@ class TranslationStatusView @JvmOverloads constructor(
         setPadding(dp(12), 0, dp(12), 0)
         visibility = View.GONE
         setOnClickListener { retryTranslation() }
+    }
+
+    private val redoButton = Button(context).apply {
+        text = "Redo"
+        textSize = 10f
+        isAllCaps = false
+        minWidth = 0
+        minimumWidth = 0
+        minimumHeight = 0
+        backgroundTintList = ColorStateList.valueOf(Color.parseColor("#2A2A3E"))
+        setTextColor(Color.parseColor("#CCCCDD"))
+        setPadding(dp(12), 0, dp(12), 0)
+        visibility = View.GONE
+        setOnClickListener {
+            MediaTracker.getInstance(context).resetTranslationForCurrentTrack()
+        }
     }
 
     private val progressBar = LinearProgressIndicator(context).apply {
@@ -132,6 +149,12 @@ class TranslationStatusView @JvmOverloads constructor(
         row.addView(
             retryButton,
             LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(30))
+        )
+        row.addView(
+            redoButton,
+            LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(30)).apply {
+                marginStart = dp(6)
+            }
         )
         addView(
             row,
@@ -273,6 +296,11 @@ class TranslationStatusView @JvmOverloads constructor(
             }
         )
         retryButton.visibility = if (canRetry) View.VISIBLE else View.GONE
+        redoButton.visibility = when (state.phase) {
+            LyricsTranslator.Phase.READY,
+            LyricsTranslator.Phase.ALREADY_ENGLISH -> View.VISIBLE
+            else -> View.GONE
+        }
 
         when (state.phase) {
             LyricsTranslator.Phase.DETECTING_LANGUAGE,

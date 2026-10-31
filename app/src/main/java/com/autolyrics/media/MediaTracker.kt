@@ -671,7 +671,7 @@ class MediaTracker private constructor(context: Context) {
             durationSec = result.matchedDurationSec,
             lines = result.lines,
             status = LyricsStatus.FOUND,
-            source = if (result.isRichSync) "Musixmatch · RichSync" else "Musixmatch · Line",
+            source = if (result.isRichSync) "Musixmatch · Karaoke" else "Musixmatch · Synced",
             syncKind = syncKind,
             artistQueryCorroborated = result.artistQueryCorroborated
         )
@@ -717,9 +717,14 @@ class MediaTracker private constructor(context: Context) {
         } ?: return null
 
         if (result.syncedLyrics != null) {
-            val lines = LrcParser.parse(result.syncedLyrics)
+            // parseKaraoke also handles plain synced lines; parse would
+            // leave Enhanced-LRC word tags as literal display text.
+            val lines = LrcParser.parseKaraoke(result.syncedLyrics)
             val hasRealText = lines.any { it.text != "♪" && it.text.isNotBlank() }
             if (hasRealText) {
+                // Enhanced uploads carry word tags; the variant and the
+                // ranking kind must describe the payload, not the endpoint.
+                val karaoke = lines.any { it.words.isNotEmpty() }
                 return LyricsProviderCandidate(
                     provider = "LRCLIB",
                     title = result.trackName.orEmpty().ifBlank { track.title },
@@ -728,8 +733,9 @@ class MediaTracker private constructor(context: Context) {
                     durationSec = result.duration,
                     lines = lines,
                     status = LyricsStatus.FOUND,
-                    source = "LRCLIB · Synced",
-                    syncKind = LyricsProviderCandidate.SyncKind.LINE_SYNC
+                    source = if (karaoke) "LRCLIB · Karaoke" else "LRCLIB · Synced",
+                    syncKind = if (karaoke) LyricsProviderCandidate.SyncKind.WORD_SYNC
+                        else LyricsProviderCandidate.SyncKind.LINE_SYNC
                 )
             }
         }
@@ -747,7 +753,7 @@ class MediaTracker private constructor(context: Context) {
                     durationSec = result.duration,
                     lines = lines,
                     status = LyricsStatus.PLAIN_ONLY,
-                    source = "LRCLIB · Plain",
+                    source = "LRCLIB · Not synced",
                     syncKind = LyricsProviderCandidate.SyncKind.PLAIN
                 )
             }
@@ -768,31 +774,41 @@ class MediaTracker private constructor(context: Context) {
     ) {
         manualSearchJob?.cancel()
         manualSearchJob = scope.launch(Dispatchers.IO) {
-            val diagnostics = mutableListOf<String>()
-            val (lrcLibResponses, syncLrcResponse, musixmatchCandidates) = try {
-                withTimeout(MANUAL_SEARCH_BUDGET_MS) {
-                    runInterruptible {
-                        val lrcLib = LrcLibClient.manualSearch(title, artist)
-                        diagnostics += lrcLib.diagnostics
-                        val syncLrc = SyncLrcClient.manualFetch(title, artist, diagnostics)
-                        val musixmatch =
-                            MusixmatchClient.manualSearch(title, artist, prefs, diagnostics)
-                        Triple(lrcLib.responses, syncLrc, musixmatch)
-                    }
-                }
-            } catch (e: TimeoutCancellationException) {
-                diagnostics += "timed out after ${MANUAL_SEARCH_BUDGET_MS / 1000}s"
-                Triple(emptyList(), null, emptyList())
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w("ManualSearch", "manual search failed", e)
-                diagnostics += "failed: ${e.javaClass.simpleName}"
-                Triple(emptyList(), null, emptyList())
+            // Fault isolation: providers run in parallel, each under its own
+            // timeout, so a stalled or failing provider can neither eat the
+            // others' budget nor void answers already fetched.
+            val lrcLibDeferred = async(Dispatchers.IO) {
+                manualLeg("lrclib") { LrcLibClient.manualSearch(title, artist) }
             }
+            val syncLrcDeferred = async(Dispatchers.IO) {
+                manualLeg("synclrc") {
+                    val legDiagnostics = mutableListOf<String>()
+                    SyncLrcClient.manualSearch(title, artist, legDiagnostics) to legDiagnostics
+                }
+            }
+            val musixmatchDeferred = async(Dispatchers.IO) {
+                manualLeg("musixmatch") {
+                    val legDiagnostics = mutableListOf<String>()
+                    MusixmatchClient.manualSearch(title, artist, prefs, legDiagnostics) to
+                        legDiagnostics
+                }
+            }
+            val (lrcLibOutcome, lrcLibLegFailure) = lrcLibDeferred.await()
+            val (syncLrcResult, syncLrcLegFailure) = syncLrcDeferred.await()
+            val (musixmatchResult, musixmatchLegFailure) = musixmatchDeferred.await()
+            val lrcLibResponses = lrcLibOutcome?.responses.orEmpty()
+            val syncLrcResponse = syncLrcResult?.first.orEmpty()
+            val musixmatchCandidates = musixmatchResult?.first.orEmpty()
+            val diagnostics = mutableListOf<String>()
+            lrcLibOutcome?.let { diagnostics += it.diagnostics }
+            syncLrcResult?.let { diagnostics += it.second }
+            musixmatchResult?.let { diagnostics += it.second }
+            diagnostics += lrcLibLegFailure
+            diagnostics += syncLrcLegFailure
+            diagnostics += musixmatchLegFailure
             val hits = (
                 ManualSearch.toHits(lrcLibResponses) +
-                    listOfNotNull(ManualSearch.toSyncLrcHit(syncLrcResponse)) +
+                    syncLrcResponse.flatMap { response -> listOfNotNull(ManualSearch.toSyncLrcHit(response)) } +
                     musixmatchCandidates.map { candidate ->
                         ManualSearchHit(
                             provider = "Musixmatch",
@@ -817,7 +833,11 @@ class MediaTracker private constructor(context: Context) {
             if (dropped > 0) {
                 diagnostics += "title filter: -$dropped"
             }
-            val ranked = ManualSearch.rank(relevant, ourDurationSec.toInt())
+            val ranked = ManualSearch.rank(
+                relevant,
+                ourDurationSec.toInt(),
+                _state.value.track?.artist.orEmpty()
+            )
             withContext(Dispatchers.Main) { onResult(ranked, diagnostics.toList()) }
         }
     }
@@ -1060,9 +1080,28 @@ class MediaTracker private constructor(context: Context) {
         LlmTranslator.resetUiState()
     }
 
+    /**
+     * One manual-search provider leg: the value, or null plus a dialog
+     * diagnostic when the leg times out or throws.
+     */
+    private suspend fun <T> manualLeg(
+        label: String,
+        block: () -> T
+    ): Pair<T?, List<String>> = try {
+        withTimeout(MANUAL_SEARCH_LEG_TIMEOUT_MS) { runInterruptible { block() } } to emptyList()
+    } catch (e: TimeoutCancellationException) {
+        null to listOf("$label: timed out after ${MANUAL_SEARCH_LEG_TIMEOUT_MS / 1000}s")
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w("ManualSearch", "$label leg failed", e)
+        null to listOf("$label: ${e.javaClass.simpleName}")
+    }
+
     companion object {
         private const val PROVIDER_BUDGET_MS = 5_000L
-        private const val MANUAL_SEARCH_BUDGET_MS = 15_000L
+        /** Per-provider wall-clock cap for one manual search leg. */
+        private const val MANUAL_SEARCH_LEG_TIMEOUT_MS = 10_000L
         private const val PROVIDER_RESOLVER_TAG = "ProviderResolver"
         private const val TRANSLATION_ENABLED_KEY = "translation_enabled"
         private const val AA_KARAOKE_ENABLED_KEY = "aa_karaoke_enabled"

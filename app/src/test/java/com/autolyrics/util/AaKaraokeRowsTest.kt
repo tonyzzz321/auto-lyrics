@@ -167,4 +167,46 @@ class AaKaraokeRowsTest {
         val bottom = AaKaraokeRows.rightAlign("ここ", 42)
         assertEquals(AaKaraokeRows.advanceEm(top), AaKaraokeRows.advanceEm(bottom), 0.25)
     }
+
+    @Test
+    fun `parity anchors on the first real line`() {
+        // With a leading music-tag line the first REAL line still rides the
+        // bottom row, and the intro previews it there.
+        assertEquals(2 to 1, AaKaraokeRows.pairFor(1, 4, base = 1))
+        assertEquals(-1 to 1, AaKaraokeRows.pairFor(-1, 4, base = 1))
+        assertEquals(-1 to 0, AaKaraokeRows.pairFor(-1, 4))
+    }
+    @Test
+    fun truncateKeepsShortTextWhole() {
+        assertEquals("Yoru ni Kakeru", AaKaraokeRows.truncate("Yoru ni Kakeru", 20.0))
+        assertEquals("米津玄師", AaKaraokeRows.truncate("米津玄師", 20.0))
+    }
+
+    @Test
+    fun truncateCutsLongTitlesWithEllipsis() {
+        val long = "In the hour of my darkness, on a bed of raging sea"
+        val cut = AaKaraokeRows.truncate(long, 20.0)
+        assertTrue(cut.endsWith("\u2026"))
+        assertTrue(AaKaraokeRows.advanceEm(cut) <= 20.0)
+        assertTrue(cut.length > 1)
+    }
+
+    @Test
+    fun truncateCountsCjkAtOneEmEach() {
+        // 20 em budget: 19 CJK chars (19 em) + ellipsis (0.9 em) fit;
+        // 20 chars + ellipsis do not.
+        val cjk = "あ".repeat(25)
+        val cut = AaKaraokeRows.truncate(cjk, 20.0)
+        assertEquals(19 + 1, cut.length)
+    }
+
+    @Test
+    fun truncateSurvivesTinyBudgetsAndSurrogates() {
+        assertEquals("\u2026", AaKaraokeRows.truncate("abc", 0.9))
+        assertEquals("abc", AaKaraokeRows.truncate("abc", 0.5))
+        val emoji = "\uD83D\uDD25".repeat(30)
+        val cut = AaKaraokeRows.truncate(emoji, 5.0)
+        assertEquals("\uD83D\uDD25".repeat(4) + "\u2026", cut)
+    }
+
 }

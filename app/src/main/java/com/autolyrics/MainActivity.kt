@@ -258,6 +258,15 @@ class MainActivity : AppCompatActivity() {
         }
 
         updateKaraokeEdgeDisplay()
+        // The edge knob calibrates one head unit at a time: the row only
+        // exists while a car owns the browse connection.
+        androidx.car.app.connection.CarConnection(this).type.observeForever { type ->
+            val connected =
+                type != androidx.car.app.connection.CarConnection.CONNECTION_TYPE_NOT_CONNECTED
+            findViewById<View>(R.id.row_karaoke_edge).visibility =
+                if (connected) View.VISIBLE else View.GONE
+            updateKaraokeEdgeDisplay()
+        }
         findViewById<Button>(R.id.btn_karaoke_edge_minus).setOnClickListener {
             adjustKaraokeEdge(-1)
         }
@@ -473,31 +482,35 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun resetKaraokeEdge() {
-        val previous = prefs.getInt(LyricsBrowserService.KARAOKE_EDGE_PREF_KEY, 0)
+        val previous = com.autolyrics.auto.AaHost.edge(prefs)
         if (previous == 0) return
 
         dismissUndoSnackbar()
-        prefs.edit().putInt(LyricsBrowserService.KARAOKE_EDGE_PREF_KEY, 0).apply()
+        com.autolyrics.auto.AaHost.putEdge(prefs, 0)
         updateKaraokeEdgeDisplay()
         showUndoSnackbar("Karaoke edge reset") {
-            prefs.edit().putInt(LyricsBrowserService.KARAOKE_EDGE_PREF_KEY, previous).apply()
+            com.autolyrics.auto.AaHost.putEdge(prefs, previous)
             updateKaraokeEdgeDisplay()
         }
     }
 
     private fun adjustKaraokeEdge(delta: Int) {
-        val current = prefs.getInt(LyricsBrowserService.KARAOKE_EDGE_PREF_KEY, 0)
+        val current = com.autolyrics.auto.AaHost.edge(prefs)
         val updated = (current + delta).coerceIn(-16, 16)
         if (updated == current) return
-        prefs.edit().putInt(LyricsBrowserService.KARAOKE_EDGE_PREF_KEY, updated).apply()
+        com.autolyrics.auto.AaHost.putEdge(prefs, updated)
         updateKaraokeEdgeDisplay()
     }
 
     private fun updateKaraokeEdgeDisplay() {
-        val edge = prefs.getInt(LyricsBrowserService.KARAOKE_EDGE_PREF_KEY, 0)
+        val edge = com.autolyrics.auto.AaHost.edge(prefs)
         findViewById<TextView>(R.id.tv_karaoke_edge).text = if (edge > 0) "+$edge" else "$edge"
         btnKaraokeEdgeReset.isEnabled = edge != 0
         btnKaraokeEdgeReset.alpha = if (edge != 0) 1f else 0.35f
+        findViewById<View>(R.id.info_karaoke_edge).contentDescription =
+            "Moves the right edge of the Android Auto Karaoke board and the header " +
+                "truncation width by one character per tap, for ${com.autolyrics.auto.AaHost.describe()}; " +
+                "each head unit keeps its own value."
     }
 
     private fun adjustAaOffset(deltaMs: Long) {

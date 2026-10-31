@@ -31,9 +31,30 @@ class LyricsCache(context: Context) {
          * They were diagnostic-only and are no longer produced, but entries
          * are permanent, so old labels are cleaned at load.
          */
-        internal fun sanitizeSource(source: String): String {
-            val marker = source.indexOf("RichSync")
-            return if (marker >= 0) source.substring(0, marker + "RichSync".length) else source
+        internal fun sanitizeSource(source: String, lines: List<LyricLine>): String {
+            var label = source
+            val marker = label.indexOf("RichSync")
+            if (marker >= 0) label = label.substring(0, marker + "RichSync".length)
+            // Provider jargon from older builds maps onto the shared
+            // vocabulary every viewer shows: Karaoke / Synced / Not synced.
+            label = when {
+                label.endsWith("· RichSync") -> label.removeSuffix("RichSync") + "Karaoke"
+                label.endsWith("· Line") -> label.removeSuffix("Line") + "Synced"
+                label.endsWith("· Plain") -> label.removeSuffix("Plain") + "Not synced"
+                else -> label
+            }
+            // Variants must describe the payload: providers ship enhanced
+            // (word-timed) uploads under "Synced" labels and line-only
+            // payloads under "Karaoke" ones, so the word content wins.
+            val hasWords = lines.any { it.words.isNotEmpty() }
+            label = when {
+                label.endsWith("· Synced") && hasWords ->
+                    label.removeSuffix("Synced") + "Karaoke"
+                label.endsWith("· Karaoke") && !hasWords ->
+                    label.removeSuffix("Karaoke") + "Synced"
+                else -> label
+            }
+            return label
         }
     }
 
@@ -84,7 +105,10 @@ class LyricsCache(context: Context) {
                     }
                 )
             }
-            Triple(lines, status, sanitizeSource(cached.source))
+            // Legacy entries stored Enhanced-LRC word tags as literal text;
+            // re-tokenize them so display and labels self-heal on read.
+            val healed = lines.map(LrcParser::repairWordTags)
+            Triple(healed, status, sanitizeSource(cached.source, healed))
         } catch (_: Exception) {
             file.delete()
             null

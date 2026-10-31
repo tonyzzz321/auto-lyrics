@@ -46,11 +46,11 @@ internal object LyricDisplay {
 
     /**
      * Countdown form of the music symbol: one glyph per remaining second
-     * until the next line, capped at three. Glyphs ride the same U+3000
+     * until the next line, capped at four. Glyphs ride the same U+3000
      * separator as [MUSIC_SYMBOL] so padded edges stay predictable.
      */
     fun countdownSymbol(secondsLeft: Int): String =
-        (1..secondsLeft.coerceIn(1, 3)).joinToString("\u3000") { "\u266A" }
+        (1..secondsLeft.coerceIn(1, 4)).joinToString("\u3000") { "\u266A" }
 
     fun displayText(text: String): String =
         if (isSymbolText(text)) MUSIC_SYMBOL else text.trim()

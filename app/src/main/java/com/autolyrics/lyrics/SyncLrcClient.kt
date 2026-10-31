@@ -24,6 +24,7 @@ object SyncLrcClient {
 
     private const val TAG = "SyncLRC"
     private const val BASE_URL = "https://api.synclrc.dev/lyrics"
+    private const val SEARCH_URL = "https://api.synclrc.dev/search"
 
     private val gson = Gson()
     private val client = OkHttpClient.Builder()
@@ -53,6 +54,33 @@ object SyncLrcClient {
         @SerializedName("album") val album: String? = null,
         @SerializedName("duration") val duration: Double? = null,
         @SerializedName("instrumental") val instrumental: Boolean = false
+    )
+
+    /** Nested `lyrics` blob of the search endpoint; flat fields are also
+     *  accepted in case a result already carries them at the top level. */
+    data class SearchLyrics(
+        @SerializedName("karaoke") val karaoke: String? = null,
+        @SerializedName("synced") val synced: String? = null,
+        @SerializedName("plain") val plain: String? = null
+    )
+
+    data class SearchResult(
+        @SerializedName("id") val id: String? = null,
+        @SerializedName("track") val track: String? = null,
+        @SerializedName("artist") val artist: String? = null,
+        @SerializedName("album") val album: String? = null,
+        @SerializedName("duration") val duration: Double? = null,
+        @SerializedName("instrumental") val instrumental: Boolean = false,
+        @SerializedName("lyrics") val lyrics: SearchLyrics? = null,
+        @SerializedName("karaoke") val karaoke: String? = null,
+        @SerializedName("synced") val synced: String? = null,
+        @SerializedName("plain") val plain: String? = null
+    )
+
+    data class SearchResponse(
+        // Nullable: Gson bypasses constructors, so a missing key yields a
+        // real null despite the Kotlin default.
+        @SerializedName("results") val results: List<SearchResult>? = null
     )
 
     fun getKaraokeLyrics(track: TrackInfo): SyncLrcResult? {
@@ -85,12 +113,14 @@ object SyncLrcClient {
         return try {
             client.newCall(request).execute().use { response ->
                 debugLog("HTTP ${response.code}; karaoke request")
-                if (!response.isSuccessful) return@use null
-                parseApiResponse(response.body?.string().orEmpty(), track)
-            }
+                if (response.isSuccessful) {
+                    return@use parseApiResponse(response.body?.string().orEmpty(), track)
+                }
+                null
+            } ?: searchFallback(track)
         } catch (e: Exception) {
             debugLog("request failed: ${e.javaClass.simpleName}: ${e.message.orEmpty()}")
-            null
+            searchFallback(track)
         }
     }
 
@@ -99,22 +129,27 @@ object SyncLrcClient {
      * nothing is rejected here: the caller surfaces synced/plain payloads too
      * so the user can see everything the aggregator knows for the terms.
      */
-    fun manualFetch(
+    /**
+     * DB-backed candidate search for the manual pick-list. The website uses
+     * this endpoint; unlike `/lyrics` it does not live-aggregate upstream
+     * sources, so it stays available while `/lyrics` reports 503.
+     */
+    fun manualSearch(
         title: String,
         artist: String,
         diagnostics: MutableList<String>? = null
-    ): ApiResponse? {
-        val track = title.trim()
-        val performer = artist.trim()
-        if (track.isBlank() && performer.isBlank()) return null
+    ): List<ApiResponse> {
+        // The free-text q AND-joins every word (like LRCLIB), so "title
+        // artist" finds nothing; search by title and rank candidates by
+        // artist afterwards.
+        val query = title.trim().ifBlank { artist.trim() }
+        if (query.isBlank()) return emptyList()
 
-        val urlBuilder = BASE_URL.toHttpUrl().newBuilder()
-        if (track.isNotBlank()) urlBuilder.addQueryParameter("track", track)
-        if (performer.isNotBlank()) urlBuilder.addQueryParameter("artist", performer)
-        urlBuilder.addQueryParameter("type", "karaoke")
-
+        val url = SEARCH_URL.toHttpUrl().newBuilder()
+            .addQueryParameter("q", query)
+            .build()
         val request = Request.Builder()
-            .url(urlBuilder.build())
+            .url(url)
             .get()
             .header("Accept", "application/json")
             .header("User-Agent", "AutoLyrics/${BuildConfig.VERSION_NAME} (Android; SyncLRC)")
@@ -124,15 +159,90 @@ object SyncLrcClient {
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     diagnostics?.plusAssign("synclrc: HTTP ${response.code}")
-                    return@use null
+                    return@use emptyList()
                 }
                 diagnostics?.plusAssign("synclrc: ok")
-                gson.fromJson(response.body?.string(), ApiResponse::class.java)
+                parseSearchResponse(response.body?.string().orEmpty())
             }
         } catch (e: Exception) {
             diagnostics?.plusAssign("synclrc: ${e.javaClass.simpleName}")
-            null
+            emptyList()
         }
+    }
+
+    internal fun parseSearchResponse(json: String): List<ApiResponse> {
+        if (json.isBlank()) return emptyList()
+        val parsed = try {
+            gson.fromJson(json, SearchResponse::class.java)
+        } catch (_: Exception) {
+            null
+        } ?: return emptyList()
+        return parsed.results.orEmpty().mapNotNull { result ->
+            val lyrics = result.lyrics
+            val response = ApiResponse(
+                id = result.id,
+                track = result.track,
+                artist = result.artist,
+                album = result.album,
+                duration = result.duration,
+                instrumental = result.instrumental,
+                karaoke = lyrics?.karaoke ?: result.karaoke,
+                synced = lyrics?.synced ?: result.synced,
+                plain = lyrics?.plain ?: result.plain
+            )
+            response.takeIf {
+                listOf(it.karaoke, it.synced, it.plain)
+                    .any { field -> !field.isNullOrBlank() }
+            }
+        }
+    }
+
+    /**
+     * Best search candidate for [track]: exact title match first, then the
+     * smallest duration delta; instrumental and empty rows never qualify.
+     */
+    internal fun pickBestCandidate(
+        candidates: List<ApiResponse>,
+        track: TrackInfo
+    ): ApiResponse? {
+        val wanted = candidates.filter { candidate ->
+            !candidate.instrumental &&
+                listOf(candidate.karaoke, candidate.synced, candidate.plain)
+                    .any { field -> !field.isNullOrBlank() }
+        }
+        return wanted.minWithOrNull(
+            compareBy<ApiResponse> { candidate ->
+                -scoreCandidate(candidate, track) +
+                    durationDelta(candidate, track) / 1000.0
+            }
+        )
+    }
+
+    private fun scoreCandidate(candidate: ApiResponse, track: TrackInfo): Int {
+        var score = 0
+        if (candidate.track.equals(track.title, ignoreCase = true)) score += 4
+        if (!candidate.artist.isNullOrBlank() && track.artist.isNotBlank() &&
+            candidate.artist.contains(track.artist, ignoreCase = true)
+        ) score += 2
+        return score
+    }
+
+    private fun durationDelta(candidate: ApiResponse, track: TrackInfo): Double {
+        val durationSec = candidate.duration ?: return 0.0
+        if (track.durationMs <= 0L) return 0.0
+        return kotlin.math.abs(durationSec - track.durationMs / 1000.0)
+    }
+
+    /**
+     * The `/lyrics` endpoint live-aggregates upstream sources and can report
+     * 503 SOURCES_UNAVAILABLE while the DB-backed endpoints stay healthy;
+     * the search endpoint then covers the same catalogue.
+     */
+    private fun searchFallback(track: TrackInfo): SyncLrcResult? {
+        val candidates = manualSearch(track.title, track.artist)
+        val best = pickBestCandidate(candidates, track) ?: return null
+        debugLog("search fallback selected '${best.track.orEmpty()}'")
+        return parseResponse(best, track)
     }
 
     internal fun parseApiResponse(
@@ -146,6 +256,14 @@ object SyncLrcClient {
         } catch (_: Exception) {
             return null
         } ?: return null
+
+        return parseResponse(response, requestedTrack)
+    }
+
+    internal fun parseResponse(
+        response: ApiResponse,
+        requestedTrack: TrackInfo? = null
+    ): SyncLrcResult? {
 
         if (response.instrumental) {
             debugLog("response rejected: instrumental")

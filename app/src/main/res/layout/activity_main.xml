@@ -675,13 +675,16 @@
                 style="?attr/materialButtonOutlinedStyle" />
         </LinearLayout>
 
-        <!-- Karaoke edge calibration row -->
+        <!-- Karaoke edge calibration row: per-head-unit calibration, so it
+             only exists while a head unit is connected. -->
         <LinearLayout
+            android:id="@+id/row_karaoke_edge"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center_vertical"
-            android:layout_marginTop="6dp">
+            android:layout_marginTop="6dp"
+            android:visibility="gone">
 
             <TextView
                 android:layout_width="wrap_content"

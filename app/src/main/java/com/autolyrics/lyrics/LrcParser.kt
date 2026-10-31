@@ -92,6 +92,19 @@ object LrcParser {
         }
     }
 
+    /**
+     * Re-tokenizes a line whose display text still contains inline word-tag
+     * timestamps (legacy cache entries written before auto-fetch parsed
+     * Enhanced-LRC uploads with [parseKaraoke]).
+     */
+    fun repairWordTags(line: LyricLine): LyricLine {
+        if (!WORD_TIMESTAMP.containsMatchIn(line.text)) return line
+        val raw = "[%02d:%02d.%03d]".format(
+            line.timeMs / 60000, (line.timeMs / 1000) % 60, line.timeMs % 1000
+        ) + line.text
+        return parseKaraokeLine(raw).firstOrNull() ?: line
+    }
+
     private fun parseKaraokeLine(line: String): List<LyricLine> {
         val timestamps = mutableListOf<Long>()
         var remaining = line.trim()

@@ -228,7 +228,7 @@ class ManualSearchTest {
             syncedHit.copy(durationSec = 240).label
         )
         assertEquals(
-            "Plain · LRCLIB · --:-- — ? — ?",
+            "Not synced · LRCLIB · --:-- — ? — ?",
             syncedHit.copy(kind = ManualHitKind.PLAIN, durationSec = null, title = "", artist = "").label
         )
     }
@@ -244,4 +244,39 @@ class ManualSearchTest {
         assert(!ManualSearch.titleIsRelevant("Come Together", "hello"))
         assert(!ManualSearch.titleIsRelevant("Yellow Submarine", "hello world"))
     }
+    @Test
+    fun rankPrefersMatchingArtistOverCover() {
+        val real = ManualSearchHit(
+            provider = "LRCLIB",
+            title = "Yoru ni Kakeru",
+            artist = "Yorushika",
+            durationSec = 267,
+            kind = ManualHitKind.SYNCED,
+            lines = emptyList(),
+            status = LyricsStatus.FOUND,
+            source = "LRCLIB · Synced"
+        )
+        val cover = real.copy(artist = "Rainych; AVIAND")
+        val ranked = ManualSearch.rank(
+            listOf(cover, real),
+            ourDurationSec = 258,
+            ourArtist = "Yorushika"
+        )
+        assertEquals("Yorushika", ranked.first().artist)
+
+        // Without a reference artist the order stays duration-driven.
+        assertEquals(
+            2,
+            ManualSearch.rank(listOf(cover, real), ourDurationSec = 267).size
+        )
+    }
+
+    @Test
+    fun artistPenaltyIgnoresFeaturingsAndParentheticals() {
+        assertEquals(0, ManualSearch.artistPenalty("First Aid Kit", "First Aid Kit feat. Emiline"))
+        assertEquals(0, ManualSearch.artistPenalty("Yorushika (よるしか)", "Yorushika"))
+        assertEquals(0, ManualSearch.artistPenalty("", "Yorushika"))
+        assertEquals(1, ManualSearch.artistPenalty("Rainych", "Yorushika"))
+    }
+
 }

@@ -16,7 +16,7 @@ enum class ManualHitKind {
         get() = when (this) {
             KARAOKE -> "Karaoke"
             SYNCED -> "Synced"
-            PLAIN -> "Plain"
+            PLAIN -> "Not synced"
         }
 }
 
@@ -108,7 +108,7 @@ object ManualSearch {
                     kind = ManualHitKind.PLAIN,
                     lines = plainLines,
                     status = LyricsStatus.PLAIN_ONLY,
-                    source = "LRCLIB · Plain"
+                    source = "LRCLIB · Not synced"
                 )
             }
         }
@@ -172,7 +172,7 @@ object ManualSearch {
                 kind = ManualHitKind.PLAIN,
                 lines = plainLines,
                 status = LyricsStatus.PLAIN_ONLY,
-                source = "SyncLRC · Plain"
+                source = "SyncLRC · Not synced"
             )
         }
         return null
@@ -229,9 +229,17 @@ object ManualSearch {
             .filter { it.isNotBlank() && it !in TITLE_NOISE_TOKENS }
             .joinToString(" ")
 
-    fun rank(hits: List<ManualSearchHit>, ourDurationSec: Int): List<ManualSearchHit> =
+    fun rank(
+        hits: List<ManualSearchHit>,
+        ourDurationSec: Int,
+        ourArtist: String = ""
+    ): List<ManualSearchHit> =
         hits.sortedWith(
             compareBy<ManualSearchHit> { it.kind.ordinal }
+                // Title-only provider queries (LRCLIB) surface same-title
+                // covers; the artist match keeps the real artist first
+                // without suppressing the alternatives.
+                .thenBy { artistPenalty(it.artist, ourArtist) }
                 .thenBy { hit ->
                     if (ourDurationSec > 0 && hit.durationSec != null) {
                         abs(hit.durationSec!! - ourDurationSec)
@@ -241,6 +249,22 @@ object ManualSearch {
                 }
                 .thenBy { it.title.lowercase(Locale.US) }
         )
+
+    /** 0 when the artists plausibly match, 1 otherwise. */
+    internal fun artistPenalty(hitArtist: String, ourArtist: String): Int {
+        if (ourArtist.isBlank() || hitArtist.isBlank()) return 0
+        val ours = normalizeArtist(ourArtist)
+        val theirs = normalizeArtist(hitArtist)
+        if (ours.isEmpty() || theirs.isEmpty()) return 0
+        return if (ours == theirs || ours.contains(theirs) || theirs.contains(ours)) 0 else 1
+    }
+
+    private fun normalizeArtist(value: String): String =
+        value.lowercase(Locale.US)
+            .replace(Regex("\\(.*?\\)|\\[.*?\\]"), " ")
+            .replace(Regex("\\b(feat|ft|featuring|with)\\b"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
 
     fun formatDuration(durationSec: Int?): String {
         if (durationSec == null || durationSec <= 0) return "--:--"

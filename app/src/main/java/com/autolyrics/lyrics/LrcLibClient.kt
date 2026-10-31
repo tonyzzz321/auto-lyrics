@@ -529,37 +529,22 @@ object LrcLibClient {
     fun manualSearch(trackName: String, artistName: String): ManualSearchOutcome {
         val track = trackName.trim()
         val artist = artistName.trim()
+        val query = track.ifBlank { artist }
         val diagnostics = mutableListOf<String>()
-        val batches = mutableListOf<List<LrcLibResponse>>()
+        if (query.isBlank()) return ManualSearchOutcome(emptyList(), diagnostics)
 
-        var first = true
-        fun run(label: String, block: () -> List<LrcLibResponse>) {
-            // LRCLIB asks clients to stay under one request per second.
-            if (!first) Thread.sleep(1_100)
-            first = false
-            val results = try {
-                block()
-            } catch (e: Exception) {
-                diagnostics += "${e.javaClass.simpleName} $label"
-                return
-            }
-            batches += results
+        // One call only. Structured params are exact-equality AND-filters and
+        // free-text q AND-joins every word, so no title+artist spelling
+        // survives real metadata; title-only is the single query that does,
+        // and ManualSearch.rank scores the artist when ordering its wider
+        // net of same-title covers and versions.
+        val responses = try {
+            searchFreeText(query, diagnostics, "lrclib")
+        } catch (e: Exception) {
+            diagnostics += "${e.javaClass.simpleName} lrclib"
+            emptyList()
         }
-
-        if (track.isNotBlank()) {
-            run("exact") { searchAll(track, artist.ifBlank { null }, null, diagnostics, "exact") }
-        }
-        if (track.isNotBlank() && artist.isNotBlank()) {
-            run("combined") { searchFreeText("$track $artist", diagnostics, "combined") }
-        }
-        if (track.isNotBlank()) {
-            run("title") { searchFreeText(track, diagnostics, "title") }
-        }
-        if (artist.isNotBlank()) {
-            run("artist") { searchFreeText(artist, diagnostics, "artist") }
-        }
-
-        return ManualSearchOutcome(ManualSearch.mergeResponses(batches), diagnostics)
+        return ManualSearchOutcome(ManualSearch.mergeResponses(listOf(responses)), diagnostics)
     }
 
     private fun searchAll(

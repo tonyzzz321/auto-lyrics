@@ -88,6 +88,12 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
         release {
+            // ML Kit's translate JNI ships ~63 MB across four ABIs; real
+            // phones and head units are arm64, so release packs that ABI
+            // only (debug keeps all ABIs for emulators).
+            ndk {
+                abiFilters += "arm64-v8a"
+            }
             isMinifyEnabled = true
             signingConfig = signingConfigs.getByName("debug")
             proguardFiles(

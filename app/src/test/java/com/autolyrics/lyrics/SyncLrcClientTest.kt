@@ -157,4 +157,86 @@ class SyncLrcClientTest {
         assertEquals(6, line?.words?.size)
         assertTrue(line?.words?.all { it.text.length == 1 } == true)
     }
+    @Test
+    fun parsesSearchResultsIntoApiResponses() {
+        val json = """
+            {
+              "results": [
+                {
+                  "id": "abc",
+                  "track": "Song",
+                  "artist": "Singer",
+                  "album": "LP",
+                  "duration": 200,
+                  "instrumental": false,
+                  "lyrics": {
+                    "plain": "plain text",
+                    "synced": "[00:01.00]Song",
+                    "karaoke": "[00:01.00]<00:01.00>Song"
+                  }
+                },
+                {
+                  "id": "def",
+                  "track": "Empty",
+                  "artist": "Nobody",
+                  "lyrics": {"plain": "  "}
+                }
+              ],
+              "total": 2,
+              "limit": 10
+            }
+        """.trimIndent()
+
+        val rows = SyncLrcClient.parseSearchResponse(json)
+        assertEquals(1, rows.size)
+        assertEquals("Song", rows[0].track)
+        assertEquals("[00:01.00]<00:01.00>Song", rows[0].karaoke)
+        assertEquals("[00:01.00]Song", rows[0].synced)
+    }
+
+    @Test
+    fun parsesFlatSearchResults() {
+        val json = """
+            {"results":[{"track":"Flat","artist":"One","karaoke":"[00:01.00]flat"}]}
+        """.trimIndent()
+        val rows = SyncLrcClient.parseSearchResponse(json)
+        assertEquals("Flat", rows.single().track)
+        assertEquals("[00:01.00]flat", rows.single().karaoke)
+    }
+
+    @Test
+    fun pickBestPrefersExactTitleThenClosestDuration() {
+        val candidate = SyncLrcClient.ApiResponse(track = "Yoru ni Kakeru", artist = "Yorushika")
+        val far = SyncLrcClient.ApiResponse(
+            track = "Yoru ni Kakeru",
+            artist = "Yorushika",
+            duration = 900.0,
+            plain = "far"
+        )
+        val near = SyncLrcClient.ApiResponse(
+            track = "Yoru ni Kakeru",
+            artist = "Yorushika",
+            duration = 260.0,
+            plain = "near"
+        )
+        val other = SyncLrcClient.ApiResponse(track = "Elsewhere", artist = "Yorushika", plain = "x")
+        val best = SyncLrcClient.pickBestCandidate(
+            listOf(other, far, near),
+            TrackInfo(title = "Yoru ni Kakeru", artist = "Yorushika", album = "", durationMs = 258_000L)
+        )
+        assertEquals("near", best?.plain)
+
+        // Instrumental and payload-less rows never qualify.
+        assertEquals(
+            null,
+            SyncLrcClient.pickBestCandidate(
+                listOf(
+                    candidate.copy(instrumental = true, plain = "y"),
+                    
+                ),
+                TrackInfo(title = "Yoru ni Kakeru", artist = "Yorushika", album = "", durationMs = 0L)
+            )
+        )
+    }
+
 }

@@ -43,7 +43,7 @@ class LyricDisplayTest {
     fun countdownSymbols() {
         assertEquals("\u266A", LyricDisplay.countdownSymbol(1))
         assertEquals(LyricDisplay.MUSIC_SYMBOL, LyricDisplay.countdownSymbol(3))
-        assertEquals(LyricDisplay.MUSIC_SYMBOL, LyricDisplay.countdownSymbol(9))
+        assertEquals("\u266A\u3000\u266A\u3000\u266A\u3000\u266A", LyricDisplay.countdownSymbol(9))
         assertEquals("\u266A", LyricDisplay.countdownSymbol(0))
         assertEquals("\u266A\u3000\u266A", LyricDisplay.countdownSymbol(2))
     }

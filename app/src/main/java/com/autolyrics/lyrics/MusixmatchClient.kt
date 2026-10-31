@@ -347,7 +347,7 @@ object MusixmatchClient {
             return ManualFetched(
                 lines = richSyncLines,
                 status = LyricsStatus.FOUND,
-                source = "Musixmatch · RichSync"
+                source = "Musixmatch · Karaoke"
             )
         }
 
@@ -364,7 +364,7 @@ object MusixmatchClient {
             return ManualFetched(
                 lines = subtitleLines,
                 status = LyricsStatus.FOUND,
-                source = "Musixmatch · Line"
+                source = "Musixmatch · Synced"
             )
         }
 
@@ -382,7 +382,7 @@ object MusixmatchClient {
             return ManualFetched(
                 lines = plainLines,
                 status = LyricsStatus.PLAIN_ONLY,
-                source = "Musixmatch · Plain"
+                source = "Musixmatch · Not synced"
             )
         }
 

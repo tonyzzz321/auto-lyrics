@@ -19,20 +19,24 @@ internal object AaKaraokeRows {
      * they start being sung. Indices beyond the song end
      * with -1 so the caller can render a placeholder instead of a seek target.
      */
-    fun pairFor(activeIdx: Int, lineCount: Int): Pair<Int, Int> {
+    fun pairFor(activeIdx: Int, lineCount: Int, base: Int = 0): Pair<Int, Int> {
         if (activeIdx >= lineCount) return -1 to -1
         if (activeIdx < 0) {
-            // Instrumental intro before the first timed line: the sung side
-            // is the virtual (-1) slot (rendered as the music symbol) and
-            // the preview side already shows the line about to start.
-            return -1 to if (lineCount > 0) 0 else -1
+            // Instrumental intro before the first sung line: the sung side
+            // is the virtual (-1) slot (rendered as the countdown) and the
+            // preview side already shows the line about to start ON THE
+            // ROW IT WILL BE SUNG FROM (the bottom, offset 0 from base).
+            return -1 to if (base in 0 until lineCount) base else -1
         }
-        // Even indices (the first line, third, ...) ride the BOTTOM row: the
-        // instrumental-intro preview below already shows the first line on
-        // the bottom, and a previewed line must sit on the row it will be
-        // sung from, or it visibly hops rows the moment it starts.
-        val top = if (activeIdx % 2 == 0) activeIdx + 1 else activeIdx
-        val bottom = if (activeIdx % 2 == 0) activeIdx else activeIdx + 1
+        // Lines at an EVEN OFFSET from base ride the BOTTOM row: the
+        // instrumental-intro preview already shows the base line on the
+        // bottom, and a previewed line must sit on the row it will be
+        // sung from, or it visibly hops rows the moment it starts. The
+        // base is the song's first REAL lyric, so leading music-tag lines
+        // never shift the board's parity.
+        val even = (activeIdx - base) % 2 == 0
+        val top = if (even) activeIdx + 1 else activeIdx
+        val bottom = if (even) activeIdx else activeIdx + 1
         return (if (top < lineCount) top else -1) to
             (if (bottom < lineCount) bottom else -1)
     }
@@ -108,6 +112,9 @@ internal object AaKaraokeRows {
      * by 3 glyphs and the glyph px size), never from local font math.
      */
     private const val NOTE_EM = 0.56
+
+    /** Roboto-style ellipsis advance, rounded slightly up for wrap safety. */
+    private const val ELLIPSIS_EM = 0.9
 
     /**
      * Approximate rendered advance in ems using the head unit's Roboto
@@ -194,6 +201,30 @@ internal object AaKaraokeRows {
      * advance cancels out of both tails. Text already wider than the column
      * is returned untouched (it fills the row by itself).
      */
+    /**
+     * Ellipsize [text] so it renders on ONE browse row: Gearhead wraps
+     * oversized text instead of shrinking it, so long titles must be cut
+     * client-side using the same Roboto advance model as the padding.
+     * The ellipsis itself is charged slightly under a full em.
+     */
+    fun truncate(text: String, maxEm: Double): String {
+        if (advanceEm(text) <= maxEm || maxEm < ELLIPSIS_EM) return text
+        val prefix = StringBuilder()
+        var em = ELLIPSIS_EM
+        var i = 0
+        while (i < text.length) {
+            val step = if (Character.isHighSurrogate(text[i]) &&
+                i + 1 < text.length && Character.isLowSurrogate(text[i + 1])
+            ) 2 else 1
+            val chEm = advanceEm(text.substring(i, i + step))
+            if (em + chEm > maxEm) break
+            prefix.append(text, i, i + step)
+            em += chEm
+            i += step
+        }
+        return prefix.append('\u2026').toString()
+    }
+
     fun rightAlign(text: String, columnWidth: Int, marker: String = ""): String {
         var pad = columnWidth * 0.5 - advanceEm(text) - markerEm(marker)
         if (pad <= 0.02) return marker + text

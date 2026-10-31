@@ -63,8 +63,11 @@ class AutoLyricsApp : Application() {
         // the same relationship without a phone: the app running directly on
         // an Automotive (AAOS) head unit, as in the AAOS test emulator.
         CarConnection(this).type.observeForever { connectionType ->
-            LyricsDemandController.setCarProjectionConnected(
+            val connected =
                 connectionType != CarConnection.CONNECTION_TYPE_NOT_CONNECTED
+            com.autolyrics.auto.AaHost.onConnectionChanged(connected)
+            LyricsDemandController.setCarProjectionConnected(
+                connected
             )
         }
 

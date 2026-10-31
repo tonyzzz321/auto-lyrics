@@ -453,14 +453,13 @@ Other relevant constants:
 | `SYNC_WINDOW_SIZE` | 3 |
 | `DEFAULT_WINDOW_SIZE` | 5 |
 | `CURRENT_LINE_PREFIX` | `▶  ` |
-| `PAD_WIDTH` | 60 |
 | `NOTIFY_THROTTLE_MS` | 500 ms |
 | `SESSION_REFRESH_MS` | 1500 ms |
-| `PLAIN_LOOP_DELAY_MS` | 2000 ms |
+| `PLAIN_LOOP_DELAY_MS` | 500 ms |
 
 ## Now-playing Card Text
 
-The Android Auto now-playing card shows the current lyric in DISPLAY_TITLE and what follows in DISPLAY_SUBTITLE. Long lines are chunked at word boundaries to fit width budgets.
+The Android Auto now-playing card shows the current lyric in DISPLAY_TITLE and what follows in DISPLAY_SUBTITLE. Long lines are handed over whole and the head unit word-wraps them onto a second line on its own (`MANUAL_CARD_SPLIT = false` is the shipped default); the width-budget chunking below only runs with that static flag flipped ON.
 
 | Constant | Value | Purpose |
 |---|---:|---|
@@ -468,19 +467,16 @@ The Android Auto now-playing card shows the current lyric in DISPLAY_TITLE and w
 | SUBTITLE_MAX_WIDTH | 32 | Max display width for DISPLAY_SUBTITLE |
 | MIN_CHUNK_DISPLAY_MS | 1000 ms | Minimum display time for non-ELRC chunks |
 | DEFAULT_LAST_LINE_MS | 5000 ms | Assumed duration of last synced line when track duration unknown |
-| BROWSE_KARAOKE_WINDOW_MS | 600 ms | Karaoke bracket look-ahead for browse tree |
-| TITLE_KARAOKE_WINDOW_MS | 300 ms | Karaoke bracket look-ahead for now-playing title |
 
-Width calculation: 1 unit per Latin character, 2 per fullwidth/CJK character. Karaoke brackets 【】 count as 2 each.
+Width calculation (only consulted when `MANUAL_CARD_SPLIT` is ON): 1 unit per Latin character, 2 per fullwidth/CJK character.
 
 Architecture:
 - CardText(lyricTitle, subtitle) holds the computed text for the now-playing card
 - getCardText(state) delegates to getLyricCardText() for active lyrics, or returns status text for intro/loading/error states
-- getLyricCardText(state) handles chunking logic: find active line, chunk to TITLE_MAX_WIDTH with karaoke brackets if ELRC, select chunk by word time or proportion
+- getLyricCardText(state): finds the active line; with MANUAL_CARD_SPLIT ON it chunks to TITLE_MAX_WIDTH and selects the chunk by word time or proportion, with the flag OFF (shipped default) every card field gets the whole line
 - uildBaseMetadata(state, lyricTitle) sets DISPLAY_TITLE to lyricTitle when provided, else "Title — Artist"
-- Separate karaoke caches: rowseKaraoke (600ms window) for browse tree, 
 owPlayingKaraoke (300ms window) for now-playing
-- ChunkHold prevents flicker on estimated (non-ELRC) chunk changes
+- ChunkHold (flag ON only) prevents flicker on estimated (non-ELRC) chunk changes
 
 ## GitHub Actions
 
@@ -575,9 +571,18 @@ Manual Phone / DHU checks:
 | `app/src/main/java/com/autolyrics/lyrics/LrcParser.kt` | Standard and Enhanced-LRC parsing. |
 | `app/src/main/java/com/autolyrics/lyrics/LyricsProviderResolver.kt` | Metadata/quality/source scoring and mode-aware selection. |
 | `app/src/main/java/com/autolyrics/lyrics/LyricsCache.kt` | STANDARD/KARAOKE persistent cache. |
-| `app/src/main/java/com/autolyrics/lyrics/TranslationCache.kt` | Persistent translation cache keyed by track+target+engine+model+source-text hash. |
+| `app/src/main/java/com/autolyrics/lyrics/TranslationCache.kt` | Persistent translation cache keyed by track+target+source-text hash; engine/model stored on the entry but deliberately not keyed. |
 | `app/src/main/java/com/autolyrics/lyrics/LyricsTranslator.kt` | On-device ML Kit engine: language detection, pack downloads, per-line translation. |
 | `app/src/main/java/com/autolyrics/lyrics/LlmTranslator.kt` | Remote OpenAI-compatible engine: chunking, lenient parsing, repair retries, `/models` listing. |
+| `app/src/main/java/com/autolyrics/lyrics/TranslationEngineUi.kt` | Shared engine UI contract (StateFlow + controls) behind the engine/settings views. |
+| `app/src/main/java/com/autolyrics/util/SungLine.kt` | Single sung-line/marker-row source: derived instrumental rows, per-row countdowns, card handoff rules. |
+| `app/src/main/java/com/autolyrics/util/LyricDisplay.kt` | Ingest sanitizer (tags/headers/credits), display text rules, countdown glyph. |
+| `app/src/main/java/com/autolyrics/util/PronouncedLength.kt` | Script-aware mora estimator for line-timed holds. |
+| `app/src/main/java/com/autolyrics/util/ChineseVariant.kt` | Offline OpenCC simplified/traditional converter (comparison + conversion). |
+| `app/src/main/java/com/autolyrics/util/AaKaraokeRows.kt` | Column model, advance-width padding, truncation and word guard for browse rows. |
+| `app/src/main/java/com/autolyrics/auto/AaHost.kt` | Head-unit identity (root-hint fingerprint), per-car edge delta and pinned column. |
+| `app/src/main/java/com/autolyrics/auto/NowPlayingText.kt` | Now-playing card text state machine (phases, hold, preview). |
+| `app/src/main/java/com/autolyrics/ui/PerformanceLyricsView.kt` | Phone karaoke/performance lyric view with word highlighting. |
 | `app/src/main/java/com/autolyrics/lyrics/ManualSearch.kt` | Manual-search hit model, response conversion, duration-aware ranking. |
 | `app/src/main/java/com/autolyrics/ManualSearchDialog.kt` | Main-screen button dialog for manual lyrics lookup and override. |
 | `app/src/main/java/com/autolyrics/MediaAppsDialog.kt` | Media-source picker (Media source section): whitelist of apps whose media notifications are followed. |

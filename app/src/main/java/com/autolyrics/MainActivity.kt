@@ -71,7 +71,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var fontSettingsPanel: LinearLayout
     private lateinit var tvFontSize: TextView
     private lateinit var switchAaKaraoke: SwitchCompat
-    private lateinit var switchKaraokeRows: SwitchCompat
     private lateinit var switchTranslation: SwitchCompat
     private lateinit var tvAaDelay: TextView
     private lateinit var btnAaDelayReset: Button
@@ -86,8 +85,6 @@ class MainActivity : AppCompatActivity() {
     private var userScrolling = false
     private var userTouching = false
 
-    private var plainScrollAnimator: ValueAnimator? = null
-    private var lastPlainTrackTitle: String? = null
 
     private lateinit var btnTapSync: Button
     private lateinit var tvSyncStatus: TextView
@@ -97,6 +94,7 @@ class MainActivity : AppCompatActivity() {
     private var tapSyncTrackKey: String? = null
     private var activeUndoSnackbar: Snackbar? = null
     private var phoneKaraokeFramesRunning = false
+    private var markerEnterRunnable: Runnable? = null
 
     private val phoneKaraokeFrameRunnable = object : Runnable {
         override fun run() {
@@ -242,18 +240,6 @@ class MainActivity : AppCompatActivity() {
             prefs.edit().putBoolean("aa_karaoke_enabled", isChecked).apply()
         }
 
-        // Karaoke board row height without translations: single compact rows
-        // vs the constant-height grid (LyricsBrowserService reads the pref).
-        switchKaraokeRows = findViewById(R.id.switch_karaoke_rows)
-        switchKaraokeRows.isChecked = prefs.getBoolean(
-            LyricsBrowserService.AA_KARAOKE_SINGLE_LINE_KEY, false
-        )
-        switchKaraokeRows.setOnCheckedChangeListener { _, isChecked ->
-            prefs.edit()
-                .putBoolean(LyricsBrowserService.AA_KARAOKE_SINGLE_LINE_KEY, isChecked)
-                .apply()
-        }
-
         switchTranslation = findViewById(R.id.switch_translation)
         switchTranslation.isChecked = prefs.getBoolean("translation_enabled", true)
         switchTranslation.setOnCheckedChangeListener { _, isChecked ->
@@ -359,15 +345,6 @@ class MainActivity : AppCompatActivity() {
                         tvSource.visibility = View.GONE
                     }
 
-                    if (state.status != LyricsStatus.PLAIN_ONLY) {
-                        stopPlainScroll()
-                    } else {
-                        plainScrollAnimator?.let { anim ->
-                            if (state.isPlaying && anim.isPaused) anim.resume()
-                            else if (!state.isPlaying && anim.isRunning) anim.pause()
-                        }
-                    }
-
                     when (state.status) {
                         LyricsStatus.NO_MEDIA -> {
                             tvLyrics.text = "Play a song to see lyrics here.\n\nLyrics will also appear on Android Auto."
@@ -385,7 +362,6 @@ class MainActivity : AppCompatActivity() {
                             renderSyncedLyrics(state)
                         }
                         LyricsStatus.PLAIN_ONLY -> {
-                            stopPlainScroll()
                             val hasTrans = state.translatedLines != null
                             val sb = SpannableStringBuilder()
                             sb.append("ℹ  Lyrics are not synced to playback\n\n")
@@ -413,7 +389,11 @@ class MainActivity : AppCompatActivity() {
                                 sb.append("\n")
                             }
                             tvLyrics.text = sb
-                            startPlainScroll(state)
+                            // Unsynced lyrics are a static sheet: the
+                            // position/duration crawl implied a sync the
+                            // payload never had. Read from the top, scroll
+                            // by touch.
+                            scrollView.scrollTo(0, 0)
                         }
                     }
 
@@ -684,6 +664,28 @@ class MainActivity : AppCompatActivity() {
         // scroll exactly like lyric rows.
         val rows = SungLine.virtualRows(state.lines, state.lines.size)
         val curV = SungLine.currentVIndex(rows, state.lines, positionMs)
+        // The tracker emits state only when a REAL line (or word) changes;
+        // a marker's span opens between emissions, so without help the
+        // highlight stays on the previous lyric and flips straight OVER the
+        // marker row when the next line starts (live: interlude listed but
+        // never current). Schedule one repaint at the exact instant the
+        // next marker row begins; the handoff OUT of a marker is a real
+        // line start, which the tracker emits by itself.
+        markerEnterRunnable?.let { handler.removeCallbacks(it) }
+        markerEnterRunnable = null
+        if (curV >= 0 && curV + 1 < rows.size && rows[curV + 1].isGap) {
+            val markerStart = SungLine.rowStartMs(rows, state.lines, curV + 1)
+            val r = Runnable {
+                markerEnterRunnable = null
+                if (!isFinishing && !isDestroyed &&
+                    mediaTracker.state.value.status == LyricsStatus.FOUND
+                ) {
+                    renderSyncedLyrics(mediaTracker.state.value)
+                }
+            }
+            markerEnterRunnable = r
+            handler.postDelayed(r, (markerStart - positionMs).coerceAtLeast(0L))
+        }
         // The ▶ marker lives in a fixed leading GUTTER (drawn, not flowed):
         // flowed prefixes ("▶  " vs "    ") center at different widths per
         // line, so the centered block sat visibly off-center and the current
@@ -858,9 +860,10 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         dismissUndoSnackbar()
+        markerEnterRunnable?.let { handler.removeCallbacks(it) }
+        markerEnterRunnable = null
         prefs.unregisterOnSharedPreferenceChangeListener(aaPrefsListener)
         stopPhoneKaraokeFrames()
-        stopPlainScroll()
         super.onDestroy()
     }
 
@@ -1119,52 +1122,6 @@ class MainActivity : AppCompatActivity() {
         return "${sign}${ms}ms"
     }
 
-    private fun startPlainScroll(state: LyricsState) {
-        val durationMs = state.track?.durationMs ?: 0
-        if (durationMs <= 0 || state.lines.isEmpty()) {
-            scrollView.scrollTo(0, 0)
-            return
-        }
-
-        val trackTitle = state.track?.title
-        val isNewTrack = trackTitle != lastPlainTrackTitle
-        lastPlainTrackTitle = trackTitle
-
-        tvLyrics.post {
-            val maxScroll = tvLyrics.height - scrollView.height
-            if (maxScroll <= 0) return@post
-
-            val posMs = try {
-                mediaTracker.getCurrentPositionMs().coerceAtLeast(0)
-            } catch (_: Exception) { 0L }
-            val remainingMs = (durationMs - posMs).coerceAtLeast(0)
-            val startFraction = posMs.toFloat() / durationMs
-            val startScrollY = (startFraction * maxScroll).toInt().coerceIn(0, maxScroll)
-
-            if (isNewTrack || !userScrolling) {
-                scrollView.scrollTo(0, startScrollY)
-            }
-
-            plainScrollAnimator?.cancel()
-            plainScrollAnimator = ValueAnimator.ofInt(startScrollY, maxScroll).apply {
-                duration = remainingMs
-                interpolator = LinearInterpolator()
-                addUpdateListener { anim ->
-                    if (!userScrolling) {
-                        scrollView.scrollTo(0, anim.animatedValue as Int)
-                    }
-                }
-                start()
-                if (!state.isPlaying) pause()
-            }
-        }
-    }
-
-    private fun stopPlainScroll() {
-        plainScrollAnimator?.cancel()
-        plainScrollAnimator = null
-        lastPlainTrackTitle = null
-    }
 
     companion object {
         private const val AA_OFFSET_PREF_KEY = "aa_offset_ms"

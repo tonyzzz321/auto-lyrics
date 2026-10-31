@@ -155,4 +155,34 @@ class LyricDisplayTest {
             texts(LyricDisplay.stripTitleArtistHeaders(lines("Connect", "ClariS"), "", ""))
         )
     }
+
+    @Test
+    fun writtenFormFoldUnifiesMixedScriptTagging() {
+        fun lines(vararg texts: String) = texts.map { LyricLine(0L, it) }
+        fun texts(lines: List<LyricLine>) = lines.map { it.text }
+        // The live 凉茶王 leak: file tags mix written forms freely -
+        // session title 涼茶王 (traditional) against the header line
+        // 凉茶王-东山少爷 (simplified). Unfolded, the two keys are simply
+        // different names and the header survives every load.
+        val payload = lines("凉茶王-东山少爷", "夏日闷热怕热毒秋风起怕感冒")
+        assertEquals(
+            listOf("凉茶王-东山少爷", "夏日闷热怕热毒秋风起怕感冒"),
+            texts(LyricDisplay.stripTitleArtistHeaders(payload, "涼茶王", "东山少爷"))
+        )
+        val fold: (String) -> String = { t ->
+            t.map { mapOf('涼' to '凉', '東' to '东', '爺' to '爷').getOrDefault(it, it) }
+                .joinToString("")
+        }
+        assertEquals(
+            listOf("夏日闷热怕热毒秋风起怕感冒"),
+            texts(LyricDisplay.stripTitleArtistHeaders(payload, "涼茶王", "东山少爷", fold))
+        )
+        // Mirror case: traditional header line, simplified session metadata.
+        assertEquals(
+            listOf("夏日闷热怕热毒秋风起怕感冒"),
+            texts(LyricDisplay.stripTitleArtistHeaders(
+                lines("涼茶王 - 東山少爺", "夏日闷热怕热毒秋风起怕感冒"), "凉茶王", "东山少爷", fold
+            ))
+        )
+    }
 }

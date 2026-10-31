@@ -20,9 +20,9 @@ internal object SungLine {
     /** Silence between a derived line end and the next start that reads as
      * music: longer than this and an INTERLUDE marker row owns the gap.
      * Measured from the derived END, so it equals "over 10 s from the last
-     * word start to the next start" for token-timed lines and "over 15 s
-     * start-to-start" for line-timed ones (a token-less line is assumed to
-     * hold [LINE_HOLD_MS] first). */
+     * word start to the next start" for token-timed lines, and for
+     * line-timed ones the start-to-start gate rides the syllable-proportional
+     * hold: silence past the line's ESTIMATED sung length. */
     const val GAP_MIN_MS = 5_000L
 
     /** A token-timed line ends this long after its last token START: no
@@ -30,9 +30,17 @@ internal object SungLine {
      * the derived end everywhere (board, markers, outro). */
     const val LINE_SUSTAIN_MS = 5_000L
 
-    /** A token-less line is assumed to take this long: its derived end is
-     * the line start plus this. */
-    const val LINE_HOLD_MS = 10_000L
+    /** Line-timed hold: each pronounced syllable ([PronouncedLength]) is
+     * assumed to take this long, so a line's derived end rides its text
+     * length instead of a flat hold. Tuned generously - an under-count
+     * would fake interludes inside sung-through stretches. */
+    const val MS_PER_SYLLABLE = 800L
+
+    /** Floor of the syllable-proportional hold (one-word hooks still
+     * sustain) and ceiling (a rap block must not hold the card minutes
+     * past its last syllable). */
+    const val LINE_HOLD_MIN_MS = 2_000L
+    const val LINE_HOLD_MAX_MS = 15_000L
 
     /** Shortest opening silence that earns an INTRO marker row. Equal to
      * the countdown cap, so a marker's countdown window never reaches
@@ -46,12 +54,18 @@ internal object SungLine {
     /** How far ahead of true time the countdown digits switch. */
     const val DISPLAY_LEAD_MS = 300L
 
+    /** Estimated sung duration of a token-less line: syllable count times
+     * [MS_PER_SYLLABLE], clamped to the hold floor/ceiling. */
+    fun lineHoldMs(text: String): Long =
+        (PronouncedLength.estimate(text) * MS_PER_SYLLABLE)
+            .coerceIn(LINE_HOLD_MIN_MS, LINE_HOLD_MAX_MS)
+
     /** Derived singing end of a line: last token start plus
      * [LINE_SUSTAIN_MS] when the line carries word timings, line start
-     * plus [LINE_HOLD_MS] otherwise. */
+     * plus the syllable-proportional hold otherwise. */
     fun lineEndMs(line: LyricLine): Long =
         line.words?.maxOfOrNull { it.timeMs }?.plus(LINE_SUSTAIN_MS)
-            ?: line.timeMs + LINE_HOLD_MS
+            ?: line.timeMs + lineHoldMs(line.text)
 
     /** Where the outro starts: the derived end of the last renderable
      * line. The now-playing card shows track identity from this point;

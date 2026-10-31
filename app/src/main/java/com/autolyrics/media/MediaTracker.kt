@@ -66,6 +66,17 @@ internal data class ProviderAttempt(
  * offered a candidate and at least one leg failed on transport rather
  * than reporting a clean miss.
  */
+/**
+ * Pure retry planner: the providers worth racing AGAIN. A leg is dead when
+ * it returned no candidate AND failed transport-wise (leg timeout or any
+ * recorded transport error). Legs that answered cleanly - even cleanly with
+ * nothing - are FINAL for this playback and never re-fetched.
+ */
+internal fun retryProviders(attempts: List<ProviderAttempt>): List<String> =
+    attempts.filter {
+        it.candidate == null && (it.timedOut || it.transportErrors.isNotEmpty())
+    }.map { it.provider }
+
 internal fun isTransientMiss(attempts: List<ProviderAttempt>): Boolean =
     attempts.none { it.candidate != null } && attempts.any { it.failed }
 class MediaTracker private constructor(context: Context) {
@@ -135,6 +146,10 @@ class MediaTracker private constructor(context: Context) {
         // The global phone offset is retired: sync is per-lyrics now, and a
         // stale global value has no timing set to belong to — drop it.
         if (prefs.contains("lyrics_offset_ms")) prefs.edit().remove("lyrics_offset_ms").apply()
+        // The kanji mora table prices line-timed holds; load once off main.
+        scope.launch(Dispatchers.IO) {
+            com.autolyrics.util.PronouncedLength.ensureLoaded(appContext)
+        }
         prefs.registerOnSharedPreferenceChangeListener(preferenceChangeListener)
         startPreferenceReconciliation()
         // The offset travels with the LYRICS: whenever the published line
@@ -452,6 +467,7 @@ class MediaTracker private constructor(context: Context) {
         // playing state (accepted), and a genuine track change resets the
         // baseline below.
         val endRewind = !isPlaying && pbState.position < 2_000L && lastPositionMs > 10_000L
+        if (isPlaying && !endRewind) replayRearmIfLatched(pbState.position)
         if (endRewind) {
             if (endRewindHeldMs == 0L) endRewindHeldMs = SystemClock.elapsedRealtime()
         } else {
@@ -470,6 +486,28 @@ class MediaTracker private constructor(context: Context) {
         if (isPlaying) {
             handler.post(positionChecker)
         }
+    }
+
+    /**
+     * The NOT_FOUND latch lives only for the CURRENT playback of a track.
+     * RE-ARM TRIGGER IS PLAYBACK-AT-THE-START ONLY: a PLAYING callback with
+     * the position back inside the first seconds, after at least
+     * REPLAY_MIN_HEARD_MS was heard, means the song started again from 0
+     * (back-to-start / play-from-top) and gets one fresh full cycle - the
+     * cache holds no NOT_FOUND entry, so the race is genuine. Scrub-backs
+     * and forward seeks that do not restart at 0 never fire it, FOUND
+     * lyrics are untouched, and a cycle already running holds LOADING
+     * status so this returns without starting a second one. Pause/unpause
+     * cannot cross the threshold, and the end-of-song position-0 artifact
+     * is a NON-playing state handled by the endRewind hold above.
+     */
+    private fun replayRearmIfLatched(positionMs: Long) {
+        val track = _state.value.track ?: return
+        if (_state.value.status != LyricsStatus.NOT_FOUND) return
+        if (lastPositionMs < REPLAY_MIN_HEARD_MS) return
+        if (positionMs > START_OVER_WINDOW_MS) return
+        _state.value = _state.value.copy(status = LyricsStatus.LOADING, source = "")
+        fetchLyrics(track)
     }
 
     private fun fetchLyrics(track: TrackInfo) {
@@ -511,19 +549,30 @@ class MediaTracker private constructor(context: Context) {
                 }
 
                 var decision = fetchBestLyrics(track, preferWordSync)
-                if (decision.candidate == null && decision.transient) {
-                    // One-shot backoff retry (never a loop): every leg died
-                    // without any scoreable candidate - provider overload
-                    // windows (LRCLIB 503s, SyncLRC aggregation outages)
-                    // clear in seconds, and a track-change re-selection
-                    // should not be the user's job.
+                // Bounded retry: up to AUTO_RETRY_MAX backoff races, and a
+                // retry races ONLY the legs that died transport-wise - clean
+                // empty answers stay final. Overload windows (LRCLIB 503s,
+                // SyncLRC aggregation outages) clear in seconds; the latch
+                // after the last attempt is PER PLAYBACK only - a replay of
+                // the track re-arms the whole cycle (see replayRearmIfLatched).
+                var retries = 0
+                while (decision.candidate == null &&
+                    decision.deadProviders.isNotEmpty() &&
+                    retries < AUTO_RETRY_MAX
+                ) {
                     delay(AUTO_RETRY_BACKOFF_MS)
-                    if (_state.value.track == track &&
-                        _state.value.status == LyricsStatus.LOADING &&
-                        prefs.getBoolean(AA_KARAOKE_ENABLED_KEY, true) == preferWordSync
+                    if (_state.value.track != track ||
+                        _state.value.status != LyricsStatus.LOADING ||
+                        prefs.getBoolean(AA_KARAOKE_ENABLED_KEY, true) != preferWordSync
                     ) {
-                        decision = fetchBestLyrics(track, preferWordSync)
+                        break
                     }
+                    decision = fetchBestLyrics(
+                        track,
+                        preferWordSync,
+                        decision.deadProviders.toSet()
+                    )
+                    retries++
                 }
                 val result = decision.candidate
 
@@ -580,38 +629,46 @@ class MediaTracker private constructor(context: Context) {
 
     internal data class FetchDecision(
         val candidate: LyricsProviderCandidate?,
-        val transient: Boolean = false
+        val transient: Boolean = false,
+        val deadProviders: List<String> = emptyList()
     )
 
     private suspend fun fetchBestLyrics(
         track: TrackInfo,
-        preferWordSync: Boolean
+        preferWordSync: Boolean,
+        providers: Set<String> = RACE_PROVIDERS
     ): FetchDecision = coroutineScope {
         // Five seconds is a hard per-provider budget. Healthy responses observed in
         // practice are normally sub-second; waiting 10-15 seconds for one source
         // makes a track change feel broken. runInterruptible allows timeout/cancel
         // to interrupt the synchronous OkHttp work rather than merely abandoning
         // the Deferred while the blocking call keeps this fetch waiting.
-        val lrcLibDeferred = async {
-            fetchProviderWithBudget("LRCLIB") { t -> fetchFromLrcLib(track, t) }
+        val lrcLibDeferred = if ("LRCLIB" in providers) {
+            async { fetchProviderWithBudget("LRCLIB") { t -> fetchFromLrcLib(track, t) } }
+        } else {
+            null
         }
-        val petitLyricsDeferred = if (PetitLyricsClient.isConfigured) {
+        val petitLyricsDeferred = if ("PetitLyrics" in providers && PetitLyricsClient.isConfigured) {
             async {
                 fetchProviderWithBudget("PetitLyrics") { t -> fetchFromPetitLyrics(track, t) }
             }
         } else {
             null
         }
-        val musixmatchDeferred = async {
-            fetchProviderWithBudget("Musixmatch") { t -> fetchFromMusixmatch(track, t) }
+        val musixmatchDeferred = if ("Musixmatch" in providers) {
+            async { fetchProviderWithBudget("Musixmatch") { t -> fetchFromMusixmatch(track, t) } }
+        } else {
+            null
         }
-        val syncLrcDeferred = async {
-            fetchProviderWithBudget("SyncLRC") { t -> fetchFromSyncLrc(track, t) }
+        val syncLrcDeferred = if ("SyncLRC" in providers) {
+            async { fetchProviderWithBudget("SyncLRC") { t -> fetchFromSyncLrc(track, t) } }
+        } else {
+            null
         }
 
-        val lrcAttempt = lrcLibDeferred.await()
+        val lrcAttempt = lrcLibDeferred?.await()
         val petitAttempt = petitLyricsDeferred?.await()
-        val musixmatchAttempt = musixmatchDeferred.await()
+        val musixmatchAttempt = musixmatchDeferred?.await()
         val syncLrcAttempt = syncLrcDeferred?.await()
         val attempts = listOfNotNull(lrcAttempt, petitAttempt, musixmatchAttempt, syncLrcAttempt)
         val candidates = attempts.mapNotNull { it.candidate }
@@ -669,7 +726,8 @@ class MediaTracker private constructor(context: Context) {
         // are a genuine not-found and must not burn a retry.
         FetchDecision(
             candidate = selected?.candidate,
-            transient = selected == null && isTransientMiss(attempts)
+            transient = selected == null && isTransientMiss(attempts),
+            deadProviders = retryProviders(attempts)
         )
     }
 
@@ -1216,11 +1274,14 @@ class MediaTracker private constructor(context: Context) {
      * Translate-Lyrics toggle: OFF means show exactly what shipped.
      */
     private fun prepared(lines: List<LyricLine>, track: TrackInfo): List<LyricLine> {
-        val clean = LyricDisplay.stripTitleArtistHeaders(lines, track.title, track.artist)
+        com.autolyrics.util.ChineseVariant.ensureLoaded(appContext)
+        val clean = LyricDisplay.stripTitleArtistHeaders(
+            lines, track.title, track.artist,
+            fold = com.autolyrics.util.ChineseVariant::toSimplified
+        )
         if (clean.isEmpty() || !prefs.getBoolean(TRANSLATION_ENABLED_KEY, true)) return clean
         val target = selectedTargetLanguage()
         if (!TranslationLanguages.isChineseTarget(target)) return clean
-        com.autolyrics.util.ChineseVariant.ensureLoaded(appContext)
         return com.autolyrics.util.ChineseVariant.applyTo(clean, target)
     }
 
@@ -1352,8 +1413,20 @@ class MediaTracker private constructor(context: Context) {
         /** Upper bound on eager body fetches per lazy-body leg. */
         private const val MANUAL_BODY_LIMIT = 6
         private const val PROVIDER_BUDGET_MS = 5_000L
-        /** Single backoff pause for the one-shot transient-miss retry. */
+        /** Backoff before each transient retry race. */
         private const val AUTO_RETRY_BACKOFF_MS = 3_000L
+
+        /** Retry races after the initial one; each races dead legs only. */
+        private const val AUTO_RETRY_MAX = 2
+
+        /** A PLAYING position inside this window counts as starting at 0. */
+        private const val START_OVER_WINDOW_MS = 2_000L
+
+        /** How far into a latched song the rewind must have been heard. */
+        private const val REPLAY_MIN_HEARD_MS = 15_000L
+
+        /** The full auto-race provider set (retry subsets this). */
+        private val RACE_PROVIDERS = setOf("LRCLIB", "PetitLyrics", "Musixmatch", "SyncLRC")
         /** Per-provider wall-clock cap for one manual search leg. */
         private const val MANUAL_SEARCH_LEG_TIMEOUT_MS = 10_000L
         private const val PROVIDER_RESOLVER_TAG = "ProviderResolver"

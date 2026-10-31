@@ -179,11 +179,12 @@ class AaSequenceSimTest {
         // The parser strips every ♪ line (leading, mid-song and outro tags):
         // the sequence carries only the seven sung lines. Instrumentals are
         // derived from the timing silence, not from tags: line-timed holds
-        // end at start + 10 s, so only "third"(+10=31 -> 31: zero silence
-        // is NOT a gap) stays tight while "fourth"(41 -> 60) and the first
-        // chorus instance (65 -> 90) own interlude markers.
+        // ride the syllable estimate (x800 ms, floor 2 s), so the 5.6 s of
+        // silence after the 3-syllable "first line words" (+2.4 = 14.4) and
+        // the tight "second line here" (overlap) decide alongside the big
+        // gaps: 0, 2, 3 and 4 own interlude markers.
         assertEquals(listOf(0, 1, 2, 3, 4, 5, 6), s.rows.filter { !it.isGap }.map { it.realIndex })
-        assertEquals(listOf(3, 4), s.rows.filter { it.isGap && it.realIndex >= 0 }.map { it.realIndex })
+        assertEquals(listOf(0, 2, 3, 4), s.rows.filter { it.isGap && it.realIndex >= 0 }.map { it.realIndex })
         // First line at 12 s: the intro marker owns row 0.
         assertTrue(s.rows.first().isGap && s.rows.first().realIndex == -1)
     }
@@ -372,7 +373,7 @@ class AaSequenceSimTest {
     private fun musixmatchSubtitle() = MusixmatchClient.parseSubtitleBody(
         """
         [00:10.00]subtitle synced text
-        [00:20.00]next line text
+        [00:18.00]next line text
         [00:55.00]♪
         """.trimIndent()
     )
@@ -380,8 +381,9 @@ class AaSequenceSimTest {
     @Test
     fun musixmatchSubtitleSynced() {
         val s = sim("Musixmatch subtitle", musixmatchSubtitle())
-        // 10+10=20 -> 20: zero silence is NOT a gap; the
-        // ♪ tail is stripped entirely. (Row 0 is the 10 s intro marker.)
+        // 10 + 4 (five syllables x800 ms) = 14 -> 18: four seconds of
+        // silence is NOT yet a gap; the ♪ tail is stripped entirely.
+        // (Row 0 is the 10 s intro marker.)
         assertTrue(s.rows.none { it.isGap && it.realIndex >= 0 })
         assertEquals(2, s.count)
     }
@@ -451,14 +453,20 @@ class AaSequenceSimTest {
     }
 
     @Test
-    fun wordlessLineHoldsFiveSecondsBeforeGap() {
-        // Empty word list = line-timed: end = start + 10 s, so 70.0 is
-        // exactly the threshold and owns no marker.
+    fun wordlessLineHoldsSyllableSecondsBeforeGap() {
+        // Empty word list = line-timed: "no words" = 2 syllables -> 1.6 s,
+        // lifted by the 2 s hold floor: end 62.0, so exactly 5 s of silence
+        // (67.0) owns no marker and a ms past it earns one.
         val lines = listOf(
             LyricLine(60_000L, "no words", emptyList()),
-            line(70_000L, "next", 70_000L to 71_000L)
+            line(67_000L, "next", 67_000L to 68_000L)
         )
         assertTrue(SungLine.virtualRows(lines, 2).none { it.isGap && it.realIndex == 0 })
+        val over = listOf(
+            LyricLine(60_000L, "no words", emptyList()),
+            line(67_001L, "next", 67_001L to 68_000L)
+        )
+        assertTrue(SungLine.virtualRows(over, 2).any { it.isGap && it.realIndex == 0 })
     }
 
     @Test

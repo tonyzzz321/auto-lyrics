@@ -121,17 +121,24 @@ internal object LyricDisplay {
      * ("Hello") is real lyrics, a leading line spelling title+artist
      * verbatim is not a lyric. Never persisted — like the Chinese form
      * conversion, the cache keeps the provider's original bytes.
+     *
+     * [fold] normalizes the two Chinese WRITTEN FORMS on both sides before
+     * keying: file tags mix scripts freely (live: session title 涼茶王,
+     * header line 凉茶王-东山少爷), and an unfixed mismatch reads as two
+     * different names. Pass the offline simp fold once track context exists
+     * (see MediaTracker.prepared); identity keeps the pure matcher.
      */
     fun stripTitleArtistHeaders(
         lines: List<LyricLine>,
         title: String?,
-        artist: String?
+        artist: String?,
+        fold: (String) -> String = { it }
     ): List<LyricLine> {
-        val nt = headerKey(title.orEmpty())
-        val na = headerKey(artist.orEmpty())
+        val nt = headerKey(fold(title.orEmpty()))
+        val na = headerKey(fold(artist.orEmpty()))
         if (nt.length < 2 || na.length < 2) return lines
         val window = minOf(TITLE_HEADER_WINDOW, lines.size)
-        fun key(i: Int): String = headerKey(lines[i].text)
+        fun key(i: Int): String = headerKey(fold(lines[i].text))
         val drop = BooleanArray(lines.size)
         for (i in 0 until window) {
             val n = key(i)

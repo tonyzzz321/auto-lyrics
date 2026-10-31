@@ -97,7 +97,6 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
          * the host's per-second rebind, short rows visibly nudge. With
          * translations published the board is always two-line.
          */
-        const val AA_KARAOKE_SINGLE_LINE_KEY = "aa_karaoke_single_line"
         private const val ROOT_ID = "root"
         private const val LYRICS_MENU_ID = "lyrics_menu"
         private const val KARAOKE_MENU_ID = "karaoke_menu"
@@ -132,7 +131,6 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         // measures onto the bare-marker title text (~150 px on DHU) and the
         // guarded one-\u3000 idle lead. Pixel-tuned; retune from live shots.
         private const val TRANSLATION_SUBTITLE_PREFIX = "\u200B\u3000 "
-        private const val PAD_WIDTH = 60
         // Default right-edge column for the Karaoke tab's right-justified row,
         // in display units (CJK = 2). Rows wrap (never shrink) past their
         // width, so the true column is screen-dependent and beyond what the
@@ -151,6 +149,11 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         /** Gearhead root hint: art icon px the host wants (viewport-scaled). */
         private const val BROWSER_ICON_SIZE_HINT = "com.google.android.gms.car.media.BrowserIconSize"
         private const val NO_LYRICS_MESSAGE = "No lyrics found for this track"
+
+    // Shown wherever UNSYNCED payloads would otherwise fake a synced
+    // surface (now-playing card, Karaoke and Sync tabs). The Lyrics tab
+    // still lists them - as a static, scrollable list.
+    private const val NO_SYNCED_MESSAGE = "No synced lyrics found"
         private const val TRANSLATION_LOADING_MESSAGE = "Loading translation…"
         private const val NOTIFY_THROTTLE_MS = 500L
         // How long the now-playing card holds "No lyrics found" /
@@ -338,30 +341,26 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
                 buildWindowedLyrics(state, items)
             }
             LyricsStatus.PLAIN_ONLY -> {
-                addTrackHeader(state, items)
+                // Plain lyrics are the HONEST STATIC LIST: every line at
+                // once (the host list scrolls by touch), no sliding window
+                // and no ▶ - stamps are all zero, so any "current row"
+                // would be a position guess faking sync. The header shows
+                // the duration, not a ticking clock: nothing about a plain
+                // song changes over time, so the gate never re-pushes and
+                // the scroll position is never rebuilt under a finger.
+                addTrackHeader(state, items, staticTail = true)
                 if (state.lines.isEmpty()) {
                     items.add(buildTextItem("empty", "♪$MESSAGE_FOOT"))
                 } else {
-                    val durationMs = state.track?.durationMs ?: 0
-                    val posMs = try {
-                        mediaTracker.getCurrentPositionMs().coerceAtLeast(0)
-                    } catch (_: Exception) { 0L }
-
                     val plainCount = renderableLineCount(state.lines)
-                    val estimatedIdx = if (durationMs > 0) {
-                        ((posMs.toFloat() / durationMs) * plainCount).toInt()
-                            .coerceIn(0, plainCount - 1)
-                    } else { 0 }
-
-                    val windowSize = DEFAULT_WINDOW_SIZE
-                    val adjStart = stableWindowStart(estimatedIdx, plainCount)
-                    val winEnd = minOf(plainCount, adjStart + windowSize)
-
-                    for (i in adjStart until winEnd) {
+                    for (i in 0 until plainCount) {
                         val text = LyricDisplay.displayText(state.lines[i].text)
-                        val prefix = linePrefix(i == estimatedIdx)
                         val trans = translationFor(state, i, state.lines[i].text)
-                        items.add(buildTextItem("line_$i", "$prefix$text", pad = true, subtitle = trans))
+                        items.add(buildTextItem(
+                            "plain_line_$i",
+                            IDLE_LINE_PREFIX + rowFit(text, IDLE_LINE_PREFIX),
+                            subtitle = trans?.let { rowFit(it, IDLE_LINE_PREFIX) }
+                        ))
                     }
                 }
             }
@@ -378,8 +377,16 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         state: LyricsState,
         items: MutableList<MediaBrowserCompat.MediaItem>
     ) {
-        val plain = state.status == LyricsStatus.PLAIN_ONLY
-        if (!plain && state.status != LyricsStatus.FOUND || state.lines.isEmpty()) {
+        if (state.status == LyricsStatus.PLAIN_ONLY) {
+            // No board for a payload without timing: the two-row KTV board
+            // is a SYNCED surface, and driving it from a position/duration
+            // guess showed karaoke behaviour the data never promised.
+            // Report honestly, like the other no-board states.
+            addTrackHeader(state, items, staticTail = true)
+            items.add(buildTextItem("karaoke_no_synced", NO_SYNCED_MESSAGE + MESSAGE_FOOT))
+            return
+        }
+        if (state.status != LyricsStatus.FOUND || state.lines.isEmpty()) {
             // Loading / not-found / error have no rows to place: mirror the
             // Lyrics tab exactly.
             buildLyricsMenu(state, items)
@@ -393,35 +400,24 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         // Instrumental marker rows join the alternating flow: they pair
         // like any line (previewing glyphs, counting down while current)
         // and shift the parity of everything after them, exactly as a real
-        // lyric line would. Plain payloads carry no timing to derive
-        // markers from, so their sequence is the line list itself.
+        // lyric line would.
         val rows = SungLine.virtualRows(state.lines, boardCount)
-        // Plain payloads have no timing to drive SungLine: use the same
-        // position/duration estimate the Lyrics window runs, mapped into
-        // the row space.
-        val durationMs = state.track?.durationMs ?: 0
-        val idx = when {
-            plain -> if (durationMs > 0) ((posMs.coerceAtLeast(0).toFloat() / durationMs) *
-                rows.size).toInt().coerceIn(0, rows.size - 1) else 0
-            else -> SungLine.currentVIndex(rows, state.lines, posMs)
-        }
+        val idx = SungLine.currentVIndex(rows, state.lines, posMs)
         // Parity anchors on the SEQUENCE (user-settled board model): an
         // intro marker is row 0, so it owns the top slot and the first
         // real lyric rides the bottom; without one the first lyric takes
         // the top. Mid-song markers shift later rows' parity the same way.
         val (topIdx, bottomIdx) = AaKaraokeRows.pairFor(idx, rows.size, 0)
         // Marker rows are never marker-pinned: an active marker counts
-        // down marker-free. Plain rows never count down, so the estimate
-        // keeps its marker.
+        // down marker-free.
         val curRow = rows.getOrNull(idx)
-        val musicCurrent = !plain && curRow != null && curRow.isGap
+        val musicCurrent = curRow != null && curRow.isGap
         val topActive = topIdx == idx && !musicCurrent
         val bottomActive = bottomIdx == idx && !musicCurrent
         // Every gap row counts toward ITS OWN following line: with two
         // markers on screen (current intro, previewed interlude) a shared
         // first-future target made them tick in lockstep.
         fun cdSymFor(side: Int): String? = when {
-            plain -> null
             side in rows.indices && rows[side].isGap -> LyricDisplay.countdownSymbol(
                 SungLine.markerCountdownSeconds(rows, side, state.lines, posMs)
             )
@@ -433,9 +429,6 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         // slot (past the last lyric) must occupy BOTH rows, or the other
         // side's lyric jumps up a row height when the pair ends.
         val twoLineBoard = visibleTranslations(state) != null
-        val singleLineRows = !twoLineBoard && getSharedPreferences(
-            "auto_lyrics_prefs", MODE_PRIVATE
-        ).getBoolean(AA_KARAOKE_SINGLE_LINE_KEY, false)
 
         // One render decision per side (rowRender): countdown/symbol rows
         // carry IDENTICAL text in both fields, so the two lines of the
@@ -476,21 +469,18 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
             buildTextItem(
                 rowId(topIdx),
                 buildString {
-                    // The board is a CONSTANT two-line grid in every mode:
-                    // with translations the lyric leads and the translation
-                    // follows; without them the first line carries the
-                    // printable blank and the lyric rides the second. Row
-                    // heights then never depend on content, so the host's
-                    // per-second clock refresh can only repaint - the
-                    // every-second "jumping row" was the host re-animating
-                    // a list whose row heights varied between builds.
-                    if (!twoLineBoard && !singleLineRows) append('\u2800').append('\n')
-                    append(topMarker).append(topText)
+                    // Without translations the board is COMPACT SINGLE
+                    // lines (the constant-grid era and its settings toggle
+                    // were retired once the padEnd(60) jump was fixed -
+                    // short rows stopped needing the tall-row camouflage).
+                    // With translations the lyric leads and the
+                    // translation follows, and heights stay constant.
+                    append(topMarker).append(rowFit(topText, topMarker))
                     if (!topTranslation.isNullOrEmpty()) {
                         // Byte-identical lead to the lyric line (marker
                         // included), so both lines start at one edge with no
                         // glyph-width modeling involved.
-                        append('\n').append(topMarker).append(topTranslation)
+                        append('\n').append(topMarker).append(rowFit(topTranslation, topMarker))
                     } else if (topTranslation != null) {
                         // Pinned blank translation row: U+2800 (printable
                         // blank) occupies the row height; whitespace runs
@@ -513,11 +503,9 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
             buildTextItem(
                 rowId(bottomIdx),
                 buildString {
-                    // Constant-height grid without translations too: the
-                    // blank leads (U+2800 survives the host's line trim),
-                    // the right-aligned lyric rides the second line.
-                    if (!twoLineBoard && !singleLineRows) append('\u2800').append('\n')
-                    val bottomPad = AaKaraokeRows.rightAlign(bottomText, column, bottomMarker)
+                    val bottomPad = AaKaraokeRows.rightAlign(
+                        rowFit(bottomText, bottomMarker), column, bottomMarker
+                    )
                     if (bottomText.isEmpty() && !twoLineBoard) {
                         // Empty hold slot: the right-align pad of an empty
                         // line is pure whitespace and would trim away,
@@ -531,7 +519,11 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
                         // marker allowance as the lyric line: the rendered
                         // ▶ advance cancels out of both tails equally, so
                         // they land on one edge whatever it is.
-                        append('\n').append(AaKaraokeRows.rightAlign(bottomTranslation, column, bottomMarker))
+                        append('\n').append(
+                            AaKaraokeRows.rightAlign(
+                                rowFit(bottomTranslation, bottomMarker), column, bottomMarker
+                            )
+                        )
                     } else if (bottomTranslation != null) {
                         // Pinned blank translation row: printable blank
                         // (whitespace padding runs get trimmed and the
@@ -550,6 +542,27 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         return AaHost.column(getSharedPreferences("auto_lyrics_prefs", MODE_PRIVATE), carIconSizePx)
     }
 
+    /**
+     * Column-fit for a single-line browse row (Lyrics / Sync / Karaoke
+     * board). Gearhead WORD-WRAPS any field its layout pass measures over
+     * the calibrated column, and it re-measures byte-identical rows on
+     * every per-second header-clock rebind - a borderline row's rendered
+     * height then oscillates between one and two lines (the jump the user
+     * sees on single-line rows; tall constant rows only camouflage it).
+     * Rows therefore truncate at the column minus the lead marker's
+     * advance and the widest Latin word run (the same word guard the
+     * header title carries): a row that cannot exceed the column can only
+     * ever measure to one line, so the rebind repaints silently. Full text
+     * remains on the phone list and the now-playing card.
+     */
+    private fun rowFit(text: String, marker: String): String {
+        if (text.isEmpty()) return text
+        val budget = karaokeColumn() * 0.5 -
+            AaKaraokeRows.markerEm(marker) -
+            AaKaraokeRows.wordGuardEm(text)
+        return AaKaraokeRows.truncate(text, budget)
+    }
+
     private fun buildSyncMenu(
         state: LyricsState,
         items: MutableList<MediaBrowserCompat.MediaItem>
@@ -563,15 +576,34 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         // loads listed folders' children without any tap (prefetch moves
         // the offset on its own).
         val stepSec = String.format(Locale.US, "%.1f", SYNC_STEP_MS / 1000.0)
-        if (state.lines.isNotEmpty()) {
+        // Nothing to time against on a plain payload: no offset row, no ±,
+        // no preview window - the message row owns the tab, like the other
+        // states without synced content.
+        val timingRows = state.lines.isNotEmpty() &&
+            state.status != LyricsStatus.PLAIN_ONLY
+        if (timingRows) {
             val sec = String.format(Locale.US, "%.1f", state.offsetMs / 1000.0)
             val sign = if (state.offsetMs >= 0) "+" else ""
             items.add(buildTextItem(SYNC_OFFSET_ID, "Current offset: $sign${sec}s"))
         }
-        if (state.status == LyricsStatus.NOT_FOUND) {
-            items.add(buildTextItem("sync_not_found", NO_LYRICS_MESSAGE))
+        // Message states mirror the Lyrics tab rows (the ticking LOADING
+        // state rides the stable U+2800 second line like every other
+        // message row). No track header on this tab - the offset row owns
+        // the lead when lyrics exist.
+        when (state.status) {
+            LyricsStatus.NO_MEDIA ->
+                items.add(buildTextItem("sync_no_media", "Play a song to see lyrics"))
+            LyricsStatus.LOADING ->
+                items.add(buildTextItem("sync_loading", "Loading lyrics…$MESSAGE_FOOT"))
+            LyricsStatus.NOT_FOUND ->
+                items.add(buildTextItem("sync_not_found", NO_LYRICS_MESSAGE + MESSAGE_FOOT))
+            LyricsStatus.ERROR ->
+                items.add(buildTextItem("sync_error", "Error loading lyrics$MESSAGE_FOOT"))
+            LyricsStatus.PLAIN_ONLY ->
+                items.add(buildTextItem("sync_no_synced", NO_SYNCED_MESSAGE + MESSAGE_FOOT))
+            else -> Unit
         }
-        if (state.lines.isNotEmpty()) {
+        if (timingRows) {
             items.add(buildTextItem(SYNC_MINUS_ID, "◀◀  Delay lyrics: −${stepSec}s"))
             items.add(buildTextItem(SYNC_PLUS_ID, "▶▶  Advance lyrics: +${stepSec}s"))
 
@@ -607,7 +639,13 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
                     row.isGap -> "sync_line_gap_${row.realIndex}"
                     else -> "sync_line_${row.realIndex}"
                 }
-                items.add(buildTextItem(id, "$prefix$text", pad = true, subtitle = trans))
+                items.add(
+                    buildTextItem(
+                        id,
+                        prefix + rowFit(text, prefix),
+                        subtitle = trans?.let { rowFit(it, prefix) },
+                    )
+                )
             }
 
             // Current row pinned first: the window reads forward; at the
@@ -690,18 +728,26 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
 
     private fun addTrackHeader(
         state: LyricsState,
-        items: MutableList<MediaBrowserCompat.MediaItem>
+        items: MutableList<MediaBrowserCompat.MediaItem>,
+        /** PLAIN states carry no live anything: the tail then shows the
+         * track DURATION instead of a ticking position - and the refresh
+         * gate never pushes for it, so a touch-scroll on the static plain
+         * list is never re-laid-out under the finger. */
+        staticTail: Boolean = false
     ) {
         val track = state.track ?: return
 
         val tail = buildString {
-            val posMs = try {
+            val posMs = if (staticTail) -1L else try {
                 mediaTracker.getCurrentPositionMs().coerceAtLeast(0)
             } catch (_: Exception) { -1L }
             if (posMs >= 0 && track.durationMs > 0) {
                 append("  ·  ")
                 append(formatTime(posMs))
                 append(" / ")
+                append(formatTime(track.durationMs))
+            } else if (staticTail && track.durationMs > 0) {
+                append("  ·  ")
                 append(formatTime(track.durationMs))
             }
             val typeLabel = lyricsTypeLabel(state)
@@ -822,7 +868,13 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
                 row.isGap -> "line_gap_${row.realIndex}"
                 else -> "line_${row.realIndex}"
             }
-            items.add(buildTextItem(id, "$prefix$text", pad = true, subtitle = trans))
+            items.add(
+                buildTextItem(
+                    id,
+                    prefix + rowFit(text, prefix),
+                    subtitle = trans?.let { rowFit(it, prefix) },
+                )
+            )
         }
 
         // The current row is always the first lyric row; near the song end
@@ -838,8 +890,13 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         }
     }
 
-    private fun buildTextItem(id: String, text: String, pad: Boolean = false, subtitle: String? = null): MediaBrowserCompat.MediaItem {
-        val title = if (pad) text.padEnd(PAD_WIDTH) else text
+    private fun buildTextItem(id: String, text: String, subtitle: String? = null): MediaBrowserCompat.MediaItem {
+        // No legacy padEnd: rows carry raw text. Trailing padding past the
+        // calibrated column (old padEnd(60)) handed the host an overlong
+        // whitespace run on every lyrics row, which re-laid-out during the
+        // per-second clock rebind - the single-line Lyrics-tab jump. The
+        // karaoke board never padded past the column and never jumped.
+        val title = text
         val alignedSubtitle = if (
             !subtitle.isNullOrBlank() &&
             (id.startsWith("line_") || id.startsWith("sync_line_"))
@@ -962,13 +1019,16 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
             LyricsStatus.FOUND -> artistLine(state)
             LyricsStatus.LOADING -> "Loading lyrics…"
             LyricsStatus.NOT_FOUND -> "No lyrics found"
+            LyricsStatus.PLAIN_ONLY -> "No synced lyrics found"
             LyricsStatus.ERROR -> "Error loading lyrics"
             else -> ""
         }
         // Failure messages are informational, not permanent furniture: after
         // a grace period the identity card returns to its normal artist line
         // (the browse tabs keep reporting the failure state).
-        if (state.status == LyricsStatus.NOT_FOUND || state.status == LyricsStatus.ERROR) {
+        if (state.status == LyricsStatus.NOT_FOUND || state.status == LyricsStatus.ERROR ||
+            state.status == LyricsStatus.PLAIN_ONLY
+        ) {
             val now = SystemClock.elapsedRealtime()
             if (state.status != statusCardStatus || state.track != statusCardTrack) {
                 statusCardStatus = state.status
@@ -1069,20 +1129,10 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
                     else -> startMs + DEFAULT_LAST_LINE_MS
                 }
             }
-            LyricsStatus.PLAIN_ONLY -> {
-                // Unsynced: same estimated index as before, each line gets an equal time slice.
-                idx = if (durationMs > 0) {
-                    ((posMs.toFloat() / durationMs) * lines.size).toInt()
-                        .coerceIn(0, lines.size - 1)
-                } else 0
-                if (durationMs > 0) {
-                    startMs = durationMs * idx / lines.size
-                    endMs = durationMs * (idx + 1) / lines.size
-                } else {
-                    startMs = 0L
-                    endMs = DEFAULT_LAST_LINE_MS
-                }
-            }
+            // Plain payloads never drive the card: no derived timing
+            // means no honest "current line", and an estimated one faked
+            // sync. getCardText falls back to the identity layout with the
+            // no-synced subtitle, exactly like the not-found condition.
             else -> return null
         }
 
@@ -1268,18 +1318,11 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         val isPlain = state.status == LyricsStatus.PLAIN_ONLY
         val winSize = DEFAULT_WINDOW_SIZE
         if (isPlain) {
-            val plainCount = renderableLineCount(lines)
-            val durationMs = state.track?.durationMs ?: 0
-            val posMs = try {
-                mediaTracker.getCurrentPositionMs().coerceAtLeast(0)
-            } catch (_: Exception) { 0L }
-            val estimated = if (durationMs > 0) {
-                ((posMs.toFloat() / durationMs) * plainCount).toInt()
-                    .coerceIn(0, plainCount - 1)
-            } else 0
-            val start = stableWindowStart(estimated, plainCount)
-            return WindowInfo(start, minOf(plainCount, start + winSize), estimated,
-                headerSec = posMs / 1000)
+            // The plain list is fully static (no window, no marker, no
+            // clock in the header): NOTHING moves while it plays, so the
+            // gate reports a constant signature and pushes only on real
+            // content changes (status, translations published).
+            return WindowInfo(0, renderableLineCount(lines), -1, headerSec = -1)
         }
 
         // Mirror buildWindowedLyrics exactly: a change here must imply a
@@ -1313,10 +1356,6 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
             countdown = countdownSignature,
             headerSec = headerSec)
     }
-
-    /** Pin the active line to the first row so it never moves within the list. */
-    private fun stableWindowStart(currentIdx: Int, lineCount: Int): Int =
-        currentIdx.coerceIn(0, maxOf(0, lineCount - DEFAULT_WINDOW_SIZE))
 
     private fun notifyBrowseSections(mask: Int = NOTIFY_ALL) {
         if (mask and NOTIFY_LYRICS != 0) notifyChildrenChanged(LYRICS_MENU_ID)

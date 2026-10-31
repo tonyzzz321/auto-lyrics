@@ -106,6 +106,13 @@ object ChineseVariant {
         }
     }
 
+    /**
+     * Unconditional trad->simp fold for COMPARISON use (header matching):
+     * unlike [applyTo] there is no detect gate — the caller wants both
+     * written forms to land on one key. Kana still vetoes (Japanese guard).
+     */
+    fun toSimplified(text: String): String = convert(text, traditionalToSimplified)
+
     /** OpenCC order: greedy longest phrase match first, then per-char fallback. */
     internal fun convert(text: String, tables: Tables?): String {
         if (tables == null || hasKana(text) || text.isEmpty()) return text

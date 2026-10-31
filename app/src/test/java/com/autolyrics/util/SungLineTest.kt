@@ -95,11 +95,12 @@ class SungLineTest {
         assertTrue(SungLine.virtualRows(token, 2).none { it.isGap && it.realIndex >= 0 })
         val marker = listOf(line(60_000L, "a", 62_000L), line(72_001L, "b", 72_001L))
         assertEquals(1, SungLine.virtualRows(marker, 2).count { it.isGap && it.realIndex >= 0 })
-        // Line-timed: end = start + 10 s, so >15 s start-to-start earns a
-        // marker - same threshold, longer assumed hold.
-        val synced = listOf(plainLine(60_000L, "a"), plainLine(75_000L, "b"))
+        // Line-timed: end = start + hold ("a" = 1 syllable -> 800 ms,
+        // floored at the 2 s minimum), so >7 s start-to-start earns a
+        // marker - the gate rides the estimated sung length.
+        val synced = listOf(plainLine(60_000L, "a"), plainLine(67_000L, "b"))
         assertTrue(SungLine.virtualRows(synced, 2).none { it.isGap && it.realIndex >= 0 })
-        val syncedGap = listOf(plainLine(60_000L, "a"), plainLine(75_001L, "b"))
+        val syncedGap = listOf(plainLine(60_000L, "a"), plainLine(67_001L, "b"))
         assertEquals(1, SungLine.virtualRows(syncedGap, 2).count { it.isGap && it.realIndex >= 0 })
     }
 
@@ -110,9 +111,9 @@ class SungLineTest {
         assertEquals(84_500L, SungLine.outroStartMs(song, song.size))
         assertEquals(false, SungLine.pastLastLineEnd(song, song.size, 84_500L))
         assertEquals(true, SungLine.pastLastLineEnd(song, song.size, 84_501L))
-        // Line-timed outro: last start + 10 s.
+        // Line-timed outro: last start + hold (1 syllable -> 2 s floor).
         val synced = listOf(plainLine(1_000L, "a"), plainLine(10_000L, "b"))
-        assertEquals(20_000L, SungLine.outroStartMs(synced, 2))
+        assertEquals(12_000L, SungLine.outroStartMs(synced, 2))
     }
 
     @Test

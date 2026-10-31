@@ -63,4 +63,27 @@ class TransientMissTest {
     fun emptyAttemptListIsNotTransient() {
         assertEquals(false, isTransientMiss(emptyList()))
     }
+
+    @Test
+    fun retryPlannerRacesOnlyDeadLegs() {
+        assertEquals(
+            listOf("SyncLRC", "Musixmatch"),
+            retryProviders(
+                listOf(
+                    attempt("LRCLIB"), // clean empty: final, never retried
+                    attempt("SyncLRC", transport = listOf("HTTP 503")),
+                    attempt("Musixmatch", timedOut = true),
+                    attempt("PetitLyrics", candidate())
+                )
+            )
+        )
+    }
+
+    @Test
+    fun retryPlannerIsEmptyForCleanMisses() {
+        assertEquals(
+            emptyList<String>(),
+            retryProviders(listOf(attempt("LRCLIB"), attempt("SyncLRC")))
+        )
+    }
 }

@@ -652,46 +652,6 @@
                 style="?attr/materialButtonOutlinedStyle" />
         </LinearLayout>
 
-        <!-- Karaoke row-height choice: constant two-line grid (default,
-             jump-proof) vs compact single-line rows when no translation
-             is published. Applies to the Android Auto Karaoke board. -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:layout_marginTop="8dp">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Karaoke single lines"
-                android:textColor="#CCCCDD"
-                android:textSize="13sp" />
-
-            <com.autolyrics.ui.SettingInfoView
-                android:id="@+id/info_karaoke_single_line"
-                android:layout_width="22dp"
-                android:layout_height="22dp"
-                android:layout_marginStart="4dp"
-                android:text="ⓘ"
-                android:textColor="#777792"
-                android:textSize="12sp"
-                android:gravity="center"
-                android:background="?attr/selectableItemBackgroundBorderless"
-                android:contentDescription="Without a translation, the Karaoke board shows one line per row instead of the constant two-line grid. Compact, but the head unit's per-second clock refresh can visibly nudge single-line rows; the two-line grid repaints silently. Rows with translations always stay two-line." />
-
-            <View
-                android:layout_width="0dp"
-                android:layout_height="1dp"
-                android:layout_weight="1" />
-
-            <androidx.appcompat.widget.SwitchCompat
-                android:id="@+id/switch_karaoke_rows"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:minHeight="0dp" />
-        </LinearLayout>
         </LinearLayout>
 
         <!-- Lyrics section divider -->

@@ -174,6 +174,8 @@ Source confidence is intentionally only 8% of the final score. Current policy st
 
 ## Timing tokens vs display grouping
 
+`LrcParser` accepts fractional seconds as optional in both line (`[mm:ss]`) and word (`<mm:ss>`) timestamps — real-world files ship without fractions, with centiseconds, and with milliseconds; a strict fraction requirement silently merged later word tokens into the last parsed one, freezing karaoke highlighting mid-line. It also strips spaces flanked by CJK characters on both sides (`cleanSpacing`, applied to display text, word tokens, and plain bodies at parse time) because karaoke-adjacent sources insert them between individual characters; Latin spacing is untouched. Per-character token streams (one CJK glyph per token plus a trailing space) are handled by a second pass that drops the boundary space from the preceding token, and the karaoke display text is rebuilt as the exact concatenation of word tokens so highlight spans always align.
+
 Provider granularity is preserved independently from display granularity.
 
 Example:
@@ -344,12 +346,18 @@ If a required value is blank, PetitLyrics is skipped. These values are compiled 
 - Responses parse leniently (code-fence strip, numbered-line fallback) and must match the input line count; up to 2 in-conversation repair retries, then a hard failure that latches manual Retry — there is no silent fallback to on-device translation.
 - Model IDs come from `GET {base}/models`, fetched when the Configure dialog opens, when the Base URL field loses focus after a change, and via the ↻ reload row; endpoints without a `/models` route fall back to manual entry.
 
+## Manual lyrics search
+
+`ManualSearchDialog` (main-screen **Manual Search** button, next to Fullscreen Lyrics) opens a dialog with editable song/artist fields pre-filled from the playing track. Search runs **LRCLIB + SyncLRC + Musixmatch**: `LrcLibClient.manualSearch` fires the queries below (LRCLIB list responses embed lyric bodies, so each response is a fully-formed candidate), and `SyncLrcClient.manualFetch` asks the aggregator with the same terms — nothing is rejected there, so its karaoke/synced/plain payload becomes one extra row (SyncLRC has no candidate-list endpoint, unlike the single-match limitation on the Musixmatch path). LRCLIB query semantics matter: structured `/search?track_name=&artist_name=` is an exact-equality filter, and free-text `q=` AND-joins every word, so a single combined `"artist title"` query returns nothing for edited terms. `manualSearch` therefore fires four queries — structured, combined free-text, title-only, artist-only — and merges/dedupes via `ManualSearch.mergeResponses` within a 10 s budget. Musixmatch's list comes from `mobile.track.search` (`MusixmatchClient.manualSearch`/`parseTrackSearchResponse`); its search results carry no lyric body or duration, so those rows show `--:--` and resolve lazily on pick. Karaoke is labelled upfront when a search row carries `has_richsync` (same flag the auto macro path reads); rows without the flag are labelled Synced and may still resolve to karaoke — the applied source then says `Musixmatch · RichSync · Manual`: `applyManualLyrics` runs the hit's `fetch` lambda off-main (RichSync karaoke → line subtitle → plain body via `track.text.get`, advertisement/footer noise stripped) and reports through a callback. Rows carry their provider (`Karaoke · SyncLRC · 4:00 — …`). Applied lyrics keep one source vocabulary across providers: `Provider · Kind` from the automatic path (`LRCLIB · Synced`, `Musixmatch · RichSync`, …) gains a `· Manual` suffix when user-picked.
+
+`ManualSearch.toHits` converts responses with `LrcParser.parseKaraoke` (word-timed uploads become `Karaoke` hits and keep their word timing; line-timed ones are `Synced`; plain-only bodies are `Plain`; noise-only items dropped, duplicate ids deduped) and `ManualSearch.rank` orders rows: best kind first, then closest duration to the playing track, then title. Selecting a row calls `MediaTracker.applyManualLyrics`, which caches into the active `LyricsCache` variant with the normal 7-day refresh under the session track key (so the override survives reloads), swaps the visible state, clears stale translated lines, and triggers translation. It is a no-op if the track changed after the search; the in-flight search job is cancelled by track changes like other fetch work. The dialog's state (edited terms, last results, selection, in-flight flag) lives in `MediaTracker.manualSearchSession` for as long as the same track plays — reopening the dialog restores it, and a track change clears it; a search finishing while the dialog is closed still records into the session.
+
 ## Cache policy
 
 Cache identity includes:
 
 ```text
-namespace v13
+namespace v14
 STANDARD or KARAOKE variant
 normalized title
 normalized artist
@@ -454,6 +462,10 @@ The Windows regression job runs only for `pull_request` and `workflow_dispatch`.
 
 Release workflow details are in `RELEASE.md`.
 
+## Build and release pitfalls
+
+`./gradlew assembleDebug testDebugUnitTest` is the standard gate, but unit tests run **unminified**: R8 only touches release builds, so reflection-dependent code (Gson) can pass tests and fail on device. Release runs `proguard-android-optimize.txt` with no AGP default consumer rules; the historical incident was `LrcLibClient.executeList`'s anonymous `TypeToken` subclass losing its generic signature — every LRCLIB *search* call threw `IllegalStateException: TypeToken must be created with a type argument` in release while the `executeSingle`/`get` path (no TypeToken) kept working, which showed up as spurious "No lyrics found" instead of a crash. Fixed 2026-10 by parsing with `Array<T>::class.java` (R8-safe) plus `-keep class * extends com.google.gson.reflect.TypeToken`. After any release build change, smoke-test each Gson-reflection network path on-device.
+
 ## Regression checklist
 
 Run before merging provider/resolver changes:
@@ -503,6 +515,10 @@ Manual Phone / DHU checks:
 11. No future timing token is highlighted solely to hide browse latency.
 12. Karaoke ON can select an equivalent word-timed provider while Karaoke OFF independently retains the standard winner.
 13. Switching translation engine between on-device and remote re-translates the current track without restarting the app, and replaying a cached track shows the translated lines immediately.
+14. Manual Lyrics Search (main-screen button) with edited terms lists Karaoke/Synced/Plain results with durations, and the picked result replaces the lyrics, drops the previous translation immediately, survives reload from cache, and translates like any found result.
+15. Karaoke word highlighting advances through files whose word timestamps omit fractional seconds, and CJK lyrics render without injected inter-character spaces (including per-character SyncLRC token streams).
+16. The fullscreen performance view shows translated sublines under each lyric line, colored with the same active/inactive focus.
+17. Manual search lists SyncLRC and Musixmatch rows (provider-labelled); a Musixmatch pick shows 'Fetching lyrics…' then resolves to karaoke/synced/plain.
 
 ## Key files
 
@@ -522,6 +538,8 @@ Manual Phone / DHU checks:
 | `app/src/main/java/com/autolyrics/lyrics/TranslationCache.kt` | Persistent translation cache keyed by track+target+engine+model+source-text hash. |
 | `app/src/main/java/com/autolyrics/lyrics/LyricsTranslator.kt` | On-device ML Kit engine: language detection, pack downloads, per-line translation. |
 | `app/src/main/java/com/autolyrics/lyrics/LlmTranslator.kt` | Remote OpenAI-compatible engine: chunking, lenient parsing, repair retries, `/models` listing. |
+| `app/src/main/java/com/autolyrics/lyrics/ManualSearch.kt` | Manual-search hit model, response conversion, duration-aware ranking. |
+| `app/src/main/java/com/autolyrics/ManualSearchDialog.kt` | Main-screen button dialog for manual lyrics lookup and override. |
 | `app/src/main/java/com/autolyrics/lyrics/KaraokeTiming.kt` | Shared raw-token active-index selection. |
 | `app/src/main/java/com/autolyrics/util/LyricWordLayout.kt` | Exact source layout and timing-token → display-range grouping. |
 | `app/src/main/java/com/autolyrics/auto/LyricsBrowserService.kt` | Android Auto MediaBrowser, MediaSession, Sync controls, Karaoke rendering. |

@@ -2,7 +2,6 @@ package com.autolyrics.lyrics
 
 import com.google.gson.Gson
 import com.google.gson.annotations.SerializedName
-import com.google.gson.reflect.TypeToken
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -516,10 +515,59 @@ object LrcLibClient {
         return executeSingle(urlBuilder.build().toString())
     }
 
+    /**
+     * User-driven lookup for the manual search UI. LRCLIB's structured params
+     * are exact-equality filters and its free-text ANDs every word, so we run
+     * several queries and merge them; per-query diagnostics survive to the
+     * caller so the UI can show why an empty result happened.
+     */
+    class ManualSearchOutcome(
+        val responses: List<LrcLibResponse>,
+        val diagnostics: List<String>
+    )
+
+    fun manualSearch(trackName: String, artistName: String): ManualSearchOutcome {
+        val track = trackName.trim()
+        val artist = artistName.trim()
+        val diagnostics = mutableListOf<String>()
+        val batches = mutableListOf<List<LrcLibResponse>>()
+
+        var first = true
+        fun run(label: String, block: () -> List<LrcLibResponse>) {
+            // LRCLIB asks clients to stay under one request per second.
+            if (!first) Thread.sleep(1_100)
+            first = false
+            val results = try {
+                block()
+            } catch (e: Exception) {
+                diagnostics += "${e.javaClass.simpleName} $label"
+                return
+            }
+            batches += results
+        }
+
+        if (track.isNotBlank()) {
+            run("exact") { searchAll(track, artist.ifBlank { null }, null, diagnostics, "exact") }
+        }
+        if (track.isNotBlank() && artist.isNotBlank()) {
+            run("combined") { searchFreeText("$track $artist", diagnostics, "combined") }
+        }
+        if (track.isNotBlank()) {
+            run("title") { searchFreeText(track, diagnostics, "title") }
+        }
+        if (artist.isNotBlank()) {
+            run("artist") { searchFreeText(artist, diagnostics, "artist") }
+        }
+
+        return ManualSearchOutcome(ManualSearch.mergeResponses(batches), diagnostics)
+    }
+
     private fun searchAll(
         trackName: String,
         artistName: String?,
-        albumName: String?
+        albumName: String?,
+        diagnostics: MutableList<String>? = null,
+        label: String = "search"
     ): List<LrcLibResponse> {
         val urlBuilder = "$BASE_URL/search".toHttpUrl().newBuilder()
             .addQueryParameter("track_name", trackName)
@@ -531,15 +579,19 @@ object LrcLibClient {
             urlBuilder.addQueryParameter("album_name", albumName)
         }
 
-        return executeList(urlBuilder.build().toString())
+        return executeList(urlBuilder.build().toString(), diagnostics, label)
     }
 
-    private fun searchFreeText(query: String): List<LrcLibResponse> {
+    private fun searchFreeText(
+        query: String,
+        diagnostics: MutableList<String>? = null,
+        label: String = "search"
+    ): List<LrcLibResponse> {
         val url = "$BASE_URL/search".toHttpUrl().newBuilder()
             .addQueryParameter("q", query)
             .build()
             .toString()
-        return executeList(url)
+        return executeList(url, diagnostics, label)
     }
 
     private fun executeSingle(url: String): LrcLibResponse? {
@@ -558,7 +610,11 @@ object LrcLibClient {
         }
     }
 
-    private fun executeList(url: String): List<LrcLibResponse> {
+    private fun executeList(
+        url: String,
+        diagnostics: MutableList<String>? = null,
+        label: String = "search"
+    ): List<LrcLibResponse> {
         val request = Request.Builder()
             .url(url)
             .header("User-Agent", USER_AGENT)
@@ -566,11 +622,21 @@ object LrcLibClient {
 
         return try {
             client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@use emptyList()
-                val type = object : TypeToken<List<LrcLibResponse>>() {}.type
-                gson.fromJson<List<LrcLibResponse>>(response.body?.string(), type) ?: emptyList()
+                if (!response.isSuccessful) {
+                    diagnostics?.plusAssign("HTTP ${response.code} $label")
+                    return@use emptyList()
+                }
+                // Array class literal survives R8 without Signature/TypeToken keeps;
+                // the anonymous TypeToken subclass did not in release builds.
+                val parsed = gson.fromJson(
+                    response.body?.string(),
+                    Array<LrcLibResponse>::class.java
+                )?.toList() ?: emptyList()
+                diagnostics?.plusAssign("${parsed.size} hits $label")
+                parsed
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            diagnostics?.plusAssign("${e.javaClass.simpleName} $label")
             emptyList()
         }
     }

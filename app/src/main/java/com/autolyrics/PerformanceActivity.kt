@@ -131,7 +131,8 @@ class PerformanceActivity : AppCompatActivity() {
                     newLines = state.lines,
                     plain = plain,
                     durationMs = state.track?.durationMs ?: 0L,
-                    linesId = lyricsIdentity
+                    linesId = lyricsIdentity,
+                    newTranslations = state.translatedLines
                 )
                 if (!plain) {
                     lyricsView.setActiveLine(state.currentIndex)

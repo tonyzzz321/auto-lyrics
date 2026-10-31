@@ -19,10 +19,11 @@ Auto Lyrics is an Android app that follows the active media session and displays
 - **Robust metadata matching** — handles recording/version qualifiers, romanized-vs-native-script artist names, and multi-contributor metadata such as `Alan Menken, Howard Ashman, Samuel E. Wright, Disney`.
 - **Works with normal media-session players** — Spotify, YouTube Music, Apple Music, Poweramp, and other apps that expose usable Android media metadata.
 - **Demand-aware provider work** — active media sessions are monitored continuously, but lyric providers are queried only while the phone UI is in use or Android Auto projection is connected.
-- **Phone companion UI** — lyrics remain available on the phone, including the performance/karaoke view.
+- **Phone companion UI** — lyrics remain available on the phone, including the performance/karaoke view with translated sublines.
 - **Local cache** — normal and Karaoke selections use separate cache variants; word timestamps and explicit word end times are preserved.
 - **Dual translation engines** — on-device ML Kit, or any OpenAI-compatible remote LLM endpoint (model dropdown fed by the endpoint's `/models` route; API key optional).
 - **Persistent translation cache** — translated lines are stored per track, target language, engine/model, and lyric-text hash, so replays skip detection and network entirely.
+- **Manual lyrics search** — main-screen button opens a dialog with editable song/artist terms; pick any result (Karaoke / Synced / Plain, with its duration vs the playing track) to override automatic resolution.
 
 ## Architecture
 

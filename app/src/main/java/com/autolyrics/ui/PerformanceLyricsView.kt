@@ -56,7 +56,12 @@ class PerformanceLyricsView @JvmOverloads constructor(
         isFakeBoldText = true
     }
 
+    private val translationPaint = TextPaint(TextPaint.ANTI_ALIAS_FLAG).apply {
+        textSize = spToPx(20f)
+    }
+
     private var lines: List<LyricLine> = emptyList()
+    private var translations: List<String>? = null
     private var plainMode = false
     private var trackDurationMs = 0L
     private var message: String? = null
@@ -78,6 +83,7 @@ class PerformanceLyricsView @JvmOverloads constructor(
 
     private data class LineLayout(
         val layout: StaticLayout,
+        val translationLayout: StaticLayout?,
         val text: String,
         val tokenDisplayStart: IntArray,
         val tokenDisplayEnd: IntArray,
@@ -102,11 +108,14 @@ class PerformanceLyricsView @JvmOverloads constructor(
         newLines: List<LyricLine>,
         plain: Boolean,
         durationMs: Long,
-        linesId: Int
+        linesId: Int,
+        newTranslations: List<String>? = null
     ) {
         val identityChanged = linesId != lastLinesIdentity
-        val contentChanged = newLines !== lines || plain != plainMode || message != null
+        val contentChanged = newLines !== lines || plain != plainMode || message != null ||
+            newTranslations !== translations
 
+        translations = newTranslations
         lines = newLines
         plainMode = plain
         trackDurationMs = durationMs
@@ -212,16 +221,28 @@ class PerformanceLyricsView @JvmOverloads constructor(
             val maxScale = (availableWidth.toFloat() / widestLine)
                 .coerceIn(INACTIVE_SCALE, ACTIVE_SCALE)
 
+            val translationText = translations?.getOrNull(index)?.takeIf { it.isNotBlank() }
+            val translationLayout = translationText?.let { text ->
+                StaticLayout.Builder.obtain(text, 0, text.length, translationPaint, availableWidth)
+                    .setAlignment(Layout.Alignment.ALIGN_CENTER)
+                    .setLineSpacing(0f, 1.12f)
+                    .setIncludePad(false)
+                    .build()
+            }
+            val blockHeight = layout.height +
+                (translationLayout?.let { spToPx(TRANSLATION_GAP_SP) + it.height } ?: 0f)
+
             newTops[index] = runningTop
-            newCenters[index] = runningTop + layout.height / 2f
+            newCenters[index] = runningTop + blockHeight / 2f
             newLayouts += LineLayout(
                 layout,
+                translationLayout,
                 rendered.text,
                 displayStarts,
                 displayEnds,
                 maxScale
             )
-            runningTop += layout.height + spToPx(INTER_LINE_GAP_SP)
+            runningTop += blockHeight + spToPx(INTER_LINE_GAP_SP)
         }
 
         layouts = newLayouts
@@ -408,6 +429,15 @@ class PerformanceLyricsView @JvmOverloads constructor(
             textPaint.alpha = (alpha * 255).toInt().coerceIn(0, 255)
             lineLayout.layout.draw(canvas)
 
+            lineLayout.translationLayout?.let { translationLayout ->
+                canvas.save()
+                canvas.translate(0f, lineLayout.layout.height + spToPx(TRANSLATION_GAP_SP))
+                translationPaint.color = color
+                translationPaint.alpha = (alpha * 255 * 0.85f).toInt().coerceIn(0, 255)
+                translationLayout.draw(canvas)
+                canvas.restore()
+            }
+
             if (activeKaraoke) {
                 drawWordHighlight(canvas, lineLayout, lines[index], alpha)
             }
@@ -534,6 +564,7 @@ class PerformanceLyricsView @JvmOverloads constructor(
         private const val INACTIVE_SCALE = 0.78f
         private const val INACTIVE_ALPHA = 0.30f
         private const val INTER_LINE_GAP_SP = 18f
+        private const val TRANSLATION_GAP_SP = 3f
         private const val DAMPING_RATIO = 0.82f
         private const val SETTLE_EPS = 0.0015f
         private const val SNAP_JUMP_LINES = 6f

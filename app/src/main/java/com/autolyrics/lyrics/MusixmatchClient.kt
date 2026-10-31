@@ -231,6 +231,166 @@ object MusixmatchClient {
         return parseRichSyncResponse(response.toString())
     }
 
+    /** One search candidate for the manual pick-list. */
+    data class ManualCandidate(
+        val commonTrackId: Long,
+        val trackId: String?,
+        val title: String,
+        val artist: String,
+        /** True/False when the search row carries `has_richsync`; null = unknown. */
+        val hasRichSync: Boolean?
+    )
+
+    /** Lyrics resolved after the user picks a manual candidate. */
+    data class ManualFetched(
+        val lines: List<LyricLine>,
+        val status: LyricsStatus,
+        val source: String
+    )
+
+    /**
+     * Candidate list for the manual search dialog. `mobile.track.search` is
+     * the only list endpoint on the mobile contract; bodies arrive later via
+     * [fetchManualLyrics] when the user picks a row.
+     */
+    fun manualSearch(
+        title: String,
+        artist: String,
+        prefs: SharedPreferences? = null,
+        diagnostics: MutableList<String>? = null
+    ): List<ManualCandidate> {
+        val track = title.trim()
+        val performer = artist.trim()
+        if (track.isBlank() && performer.isBlank()) return emptyList()
+
+        val params = LinkedHashMap<String, String>()
+        if (track.isNotBlank()) params["q_track"] = track
+        if (performer.isNotBlank()) params["q_artist"] = performer
+        params["page_size"] = "10"
+
+        val response = authenticatedRequest("track.search", params, prefs)
+        if (response == null) {
+            diagnostics?.plusAssign("musixmatch: request failed")
+            return emptyList()
+        }
+
+        val candidates = parseTrackSearchResponse(response.toString())
+        diagnostics?.plusAssign("musixmatch: ${candidates.size}")
+        return candidates
+    }
+
+    internal fun parseTrackSearchResponse(json: String): List<ManualCandidate> {
+        val root = parseJsonObject(json) ?: return emptyList()
+        if (apiStatus(root) != 200) return emptyList()
+
+        return root.getAsJsonObject("message")
+            ?.getAsJsonObject("body")
+            ?.getAsJsonArray("track_list")
+            ?.mapNotNull { element ->
+                val track = element.takeIf { it.isJsonObject }
+                    ?.asJsonObject
+                    ?.getAsJsonObject("track")
+                    ?: return@mapNotNull null
+                val commonTrackId = track.longOrNull("commontrack_id")
+                    ?: return@mapNotNull null
+                val richSyncFlag = track.intOrNull("has_richsync")
+                ManualCandidate(
+                    commonTrackId = commonTrackId,
+                    trackId = track.string("track_id").takeIf { it.isNotBlank() },
+                    title = track.string("name"),
+                    artist = track.string("primary_artist_name"),
+                    hasRichSync = richSyncFlag?.let { it == 1 }
+                )
+            }
+            .orEmpty()
+    }
+
+    /**
+     * Resolves lyrics for a picked candidate: RichSync (word timing) first,
+     * then line subtitles, then the plain body as a last resort.
+     */
+    fun fetchManualLyrics(
+        candidate: ManualCandidate,
+        prefs: SharedPreferences? = null
+    ): ManualFetched? {
+        val commonTrackId = candidate.commonTrackId.toString()
+
+        val richSyncJson = authenticatedRequest(
+            endpoint = "track.richsync.get",
+            params = linkedMapOf("commontrack_id" to commonTrackId),
+            prefs = prefs
+        )
+        val richSyncLines = richSyncJson?.let { parseRichSyncResponse(it.toString()) }.orEmpty()
+        if (richSyncLines.any { it.words.isNotEmpty() } &&
+            richSyncLines.any { it.text.isNotBlank() && it.text != "♪" }
+        ) {
+            return ManualFetched(
+                lines = richSyncLines,
+                status = LyricsStatus.FOUND,
+                source = "Musixmatch · RichSync · Manual"
+            )
+        }
+
+        val subtitleLines = authenticatedRequest(
+            endpoint = "track.subtitles.get",
+            params = linkedMapOf("commontrack_id" to commonTrackId),
+            prefs = prefs
+        )
+            ?.let { extractSubtitleBody(it) }
+            ?.let { parseSubtitleBody(it) }
+            ?.filter { it.text.isNotBlank() }
+            .orEmpty()
+        if (subtitleLines.isNotEmpty() && subtitleLines.any { it.text != "♪" }) {
+            return ManualFetched(
+                lines = subtitleLines,
+                status = LyricsStatus.FOUND,
+                source = "Musixmatch · Line · Manual"
+            )
+        }
+
+        val trackId = candidate.trackId ?: return null
+        val plainBody = authenticatedRequest(
+            endpoint = "track.text.get",
+            params = linkedMapOf("track_id" to trackId),
+            prefs = prefs
+        )
+            ?.let { deepFind(it, "lyrics_body")?.asStringOrNull() }
+            .orEmpty()
+        val plainLines = cleanPlainBody(plainBody)
+            .map { text -> LyricLine(0L, LrcParser.cleanSpacing(text)) }
+        if (plainLines.isNotEmpty()) {
+            return ManualFetched(
+                lines = plainLines,
+                status = LyricsStatus.PLAIN_ONLY,
+                source = "Musixmatch · Plain · Manual"
+            )
+        }
+
+        return null
+    }
+
+    internal fun extractSubtitleBody(root: JsonObject): String {
+        return root.getAsJsonObject("message")
+            ?.getAsJsonObject("body")
+            ?.getAsJsonArray("subtitle_list")
+            ?.firstOrNull()
+            ?.takeIf { it.isJsonObject }
+            ?.asJsonObject
+            ?.getAsJsonObject("subtitle")
+            ?.string("subtitle_body")
+            .orEmpty()
+    }
+
+    internal fun cleanPlainBody(body: String): List<String> {
+        return body.lines()
+            .map { it.trim() }
+            .filter {
+                it.isNotEmpty() &&
+                    !it.startsWith("***") &&
+                    !it.contains("Advertisement", ignoreCase = true)
+            }
+    }
+
     private fun authenticatedRequest(
         endpoint: String,
         params: LinkedHashMap<String, String>,

@@ -7,8 +7,8 @@
 -keep class okhttp3.** { *; }
 
 # Gson
+-keep class * extends com.google.gson.reflect.TypeToken
 -keep class com.autolyrics.lyrics.LrcLibClient$LrcLibResponse { *; }
--keep class com.autolyrics.lyrics.LrcLibClient$LrcLibSearchResult { *; }
 -keep class com.autolyrics.lyrics.SyncLrcClient$ApiResponse { *; }
 -keep class com.autolyrics.lyrics.LyricsCache$CachedResult { *; }
 -keep class com.autolyrics.lyrics.LyricsCache$CachedLine { *; }

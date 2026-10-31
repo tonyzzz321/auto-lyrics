@@ -19,6 +19,9 @@ import com.autolyrics.lyrics.LyricsProviderCandidate
 import com.autolyrics.lyrics.LyricsProviderResolver
 import com.autolyrics.lyrics.LyricsTranslator
 import com.autolyrics.lyrics.LlmTranslator
+import com.autolyrics.lyrics.ManualSearch
+import com.autolyrics.lyrics.ManualHitKind
+import com.autolyrics.lyrics.ManualSearchHit
 import com.autolyrics.lyrics.MetadataCleaner
 import com.autolyrics.lyrics.MusixmatchClient
 import com.autolyrics.lyrics.PetitLyricsClient
@@ -55,6 +58,23 @@ class MediaTracker private constructor(context: Context) {
     private var fetchJob: Job? = null
     private var artJob: Job? = null
     private var translationJob: Job? = null
+    private var manualSearchJob: Job? = null
+
+    /**
+     * Dialog state for the manual search (edited terms, last results and
+     * selection) kept alive while the same track plays so reopening the
+     * dialog does not lose the user's work. Cleared on track change.
+     */
+    data class ManualSearchSession(
+        var title: String,
+        var artist: String,
+        var hits: List<ManualSearchHit> = emptyList(),
+        var diagnostics: List<String> = emptyList(),
+        var selected: ManualSearchHit? = null,
+        var searching: Boolean = false
+    )
+
+    var manualSearchSession: ManualSearchSession? = null
     private var pendingTrack: TrackInfo? = null
     private var pendingArt: Bitmap? = null
     private var lyricsOffsetMs: Long = 0L
@@ -102,6 +122,8 @@ class MediaTracker private constructor(context: Context) {
         if (track == current) return@Runnable
 
         translationJob?.cancel()
+        manualSearchJob?.cancel()
+        manualSearchSession = null
         _state.value = _state.value.copy(
             track = track,
             lines = emptyList(),
@@ -398,7 +420,9 @@ class MediaTracker private constructor(context: Context) {
                             currentIndex = -1,
                             currentWordIndex = -1,
                             status = result.status,
-                            source = result.source
+                            source = result.source,
+                            translatedLines = null,
+                            detectedLanguage = null
                         )
                         if (result.status == LyricsStatus.FOUND) {
                             updateCurrentPosition()
@@ -701,7 +725,7 @@ class MediaTracker private constructor(context: Context) {
         if (result.plainLyrics != null) {
             val lines = result.plainLyrics.lines()
                 .filter { it.isNotBlank() }
-                .map { text -> LyricLine(0L, text) }
+                .map { text -> LyricLine(0L, LrcParser.cleanSpacing(text)) }
             if (lines.isNotEmpty()) {
                 return LyricsProviderCandidate(
                     provider = "LRCLIB",
@@ -718,6 +742,151 @@ class MediaTracker private constructor(context: Context) {
         }
 
         return null
+    }
+
+    /**
+     * User-initiated lookup from the manual search dialog. Results are ranked
+     * against the current track duration; the dialog applies a hit via
+     * [applyManualLyrics], which is a no-op once the track changed.
+     */
+    fun launchManualSearch(
+        title: String,
+        artist: String,
+        onResult: (hits: List<ManualSearchHit>, diagnostics: List<String>) -> Unit
+    ) {
+        manualSearchJob?.cancel()
+        manualSearchJob = scope.launch(Dispatchers.IO) {
+            val diagnostics = mutableListOf<String>()
+            val (lrcLibResponses, syncLrcResponse, musixmatchCandidates) = try {
+                withTimeout(MANUAL_SEARCH_BUDGET_MS) {
+                    runInterruptible {
+                        val lrcLib = LrcLibClient.manualSearch(title, artist)
+                        diagnostics += lrcLib.diagnostics
+                        val syncLrc = SyncLrcClient.manualFetch(title, artist, diagnostics)
+                        val musixmatch =
+                            MusixmatchClient.manualSearch(title, artist, prefs, diagnostics)
+                        Triple(lrcLib.responses, syncLrc, musixmatch)
+                    }
+                }
+            } catch (e: TimeoutCancellationException) {
+                diagnostics += "timed out after ${MANUAL_SEARCH_BUDGET_MS / 1000}s"
+                Triple(emptyList(), null, emptyList())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("ManualSearch", "manual search failed", e)
+                diagnostics += "failed: ${e.javaClass.simpleName}"
+                Triple(emptyList(), null, emptyList())
+            }
+            val hits = (
+                ManualSearch.toHits(lrcLibResponses) +
+                    listOfNotNull(ManualSearch.toSyncLrcHit(syncLrcResponse)) +
+                    musixmatchCandidates.map { candidate ->
+                        ManualSearchHit(
+                            provider = "Musixmatch",
+                            title = candidate.title,
+                            artist = candidate.artist,
+                            durationSec = null,
+                            kind = if (candidate.hasRichSync == true) {
+                                ManualHitKind.KARAOKE
+                            } else {
+                                ManualHitKind.SYNCED
+                            },
+                            lines = emptyList(),
+                            status = LyricsStatus.FOUND,
+                            source = "Musixmatch · Line · Manual",
+                            fetch = { MusixmatchClient.fetchManualLyrics(candidate, prefs) }
+                        )
+                    }
+                )
+            val ourDurationSec = (_state.value.track?.durationMs ?: 0L) / 1000
+            val ranked = ManualSearch.rank(hits, ourDurationSec.toInt())
+            withContext(Dispatchers.Main) { onResult(ranked, diagnostics.toList()) }
+        }
+    }
+
+    /**
+     * Applies a manual search hit as the current lyrics and caches it. Hits
+     * carrying a [ManualSearchHit.fetch] resolve their lyrics off-main first;
+     * [onResult] reports success and an optional user-facing failure reason.
+     */
+    fun applyManualLyrics(
+        hit: ManualSearchHit,
+        expectedTrack: TrackInfo,
+        onResult: (applied: Boolean, message: String?) -> Unit
+    ) {
+        val track = _state.value.track ?: run {
+            onResult(false, "No playing track")
+            return
+        }
+        if (track != expectedTrack) {
+            onResult(false, "Track changed · search again")
+            return
+        }
+
+        val fetch = hit.fetch
+        if (fetch == null) {
+            onResult(applyHit(hit, track), null)
+            return
+        }
+
+        manualSearchJob?.cancel()
+        manualSearchJob = scope.launch(Dispatchers.IO) {
+            val fetched = runInterruptible {
+                try {
+                    fetch()
+                } catch (e: Exception) {
+                    Log.w("ManualSearch", "manual fetch failed", e)
+                    null
+                }
+            }
+            withContext(Dispatchers.Main) {
+                if (fetched == null || fetched.lines.isEmpty()) {
+                    onResult(false, "Provider returned no usable lyrics")
+                } else {
+                    val applied = applyHit(
+                        hit.copy(
+                            lines = fetched.lines,
+                            status = fetched.status,
+                            source = fetched.source,
+                            fetch = null
+                        ),
+                        track
+                    )
+                    onResult(applied, if (applied) null else "Track changed · search again")
+                }
+            }
+        }
+    }
+
+    private fun applyHit(hit: ManualSearchHit, track: TrackInfo): Boolean {
+        val variant = if (prefs.getBoolean(AA_KARAOKE_ENABLED_KEY, true)) {
+            LyricsCache.Variant.KARAOKE
+        } else {
+            LyricsCache.Variant.STANDARD
+        }
+        lyricsCache.put(
+            track = track,
+            lines = hit.lines,
+            status = hit.status,
+            source = hit.source,
+            refreshAfterMs = LyricsCache.DEFAULT_REFRESH_AFTER_MS,
+            variant = variant
+        )
+        _state.value = _state.value.copy(
+            lines = hit.lines,
+            currentIndex = -1,
+            currentWordIndex = -1,
+            status = hit.status,
+            source = hit.source,
+            translatedLines = null,
+            detectedLanguage = null
+        )
+        if (hit.status == LyricsStatus.FOUND) {
+            updateCurrentPosition()
+        }
+        translateIfNeeded(hit.lines, track)
+        return true
     }
 
     private fun handleKaraokePreferenceChanged() {
@@ -855,6 +1024,7 @@ class MediaTracker private constructor(context: Context) {
 
     companion object {
         private const val PROVIDER_BUDGET_MS = 5_000L
+        private const val MANUAL_SEARCH_BUDGET_MS = 15_000L
         private const val PROVISIONAL_CACHE_REFRESH_MS = 15L * 60 * 1000
         private const val PROVIDER_RESOLVER_TAG = "ProviderResolver"
         private const val TRANSLATION_ENABLED_KEY = "translation_enabled"

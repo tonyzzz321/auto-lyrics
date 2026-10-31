@@ -41,7 +41,7 @@ object SyncLrcClient {
         val artistQueryCorroborated: Boolean = false
     )
 
-    internal data class ApiResponse(
+    data class ApiResponse(
         @SerializedName("karaoke") val karaoke: String? = null,
         @SerializedName("synced") val synced: String? = null,
         @SerializedName("plain") val plain: String? = null,
@@ -90,6 +90,47 @@ object SyncLrcClient {
             }
         } catch (e: Exception) {
             debugLog("request failed: ${e.javaClass.simpleName}: ${e.message.orEmpty()}")
+            null
+        }
+    }
+
+    /**
+     * Raw lookup for the manual search pick-list. Unlike [getKaraokeLyrics]
+     * nothing is rejected here: the caller surfaces synced/plain payloads too
+     * so the user can see everything the aggregator knows for the terms.
+     */
+    fun manualFetch(
+        title: String,
+        artist: String,
+        diagnostics: MutableList<String>? = null
+    ): ApiResponse? {
+        val track = title.trim()
+        val performer = artist.trim()
+        if (track.isBlank() && performer.isBlank()) return null
+
+        val urlBuilder = BASE_URL.toHttpUrl().newBuilder()
+        if (track.isNotBlank()) urlBuilder.addQueryParameter("track", track)
+        if (performer.isNotBlank()) urlBuilder.addQueryParameter("artist", performer)
+        urlBuilder.addQueryParameter("type", "karaoke")
+
+        val request = Request.Builder()
+            .url(urlBuilder.build())
+            .get()
+            .header("Accept", "application/json")
+            .header("User-Agent", "AutoLyrics/${BuildConfig.VERSION_NAME} (Android; SyncLRC)")
+            .build()
+
+        return try {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    diagnostics?.plusAssign("synclrc: HTTP ${response.code}")
+                    return@use null
+                }
+                diagnostics?.plusAssign("synclrc: ok")
+                gson.fromJson(response.body?.string(), ApiResponse::class.java)
+            }
+        } catch (e: Exception) {
+            diagnostics?.plusAssign("synclrc: ${e.javaClass.simpleName}")
             null
         }
     }

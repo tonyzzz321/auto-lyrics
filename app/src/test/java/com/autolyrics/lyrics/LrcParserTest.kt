@@ -58,4 +58,47 @@ class LrcParserTest {
         assertEquals("Line only", lines.single().text)
         assertTrue(lines.single().words.isEmpty())
     }
+
+    @Test
+    fun karaokeWordTimestampsWithoutFractionStillProduceTokens() {
+        val lrc = "[00:01.00]<00:01.00>first <00:02>second <00:03.50>third"
+
+        val line = LrcParser.parseKaraoke(lrc).single()
+
+        assertEquals(listOf("first ", "second ", "third"), line.words.map { it.text })
+        assertEquals(listOf(1_000L, 2_000L, 3_500L), line.words.map { it.timeMs })
+    }
+
+    @Test
+    fun lineTimestampsMayOmitFractionOrUseComma() {
+        val lines = LrcParser.parse("[00:42]line one\n[01:03.5]line two\n[01:10,25]line three")
+        assertEquals(listOf(42_000L, 63_500L, 70_250L), lines.map { it.timeMs })
+    }
+
+    @Test
+    fun cjkSpacingIsRemovedButLatinSpacingSurvives() {
+        val line = LrcParser.parse("[00:01.00] 春 の 光 hello world").single()
+        assertEquals("春の光 hello world", line.text)
+    }
+
+    @Test
+    fun cjkSpacingCleanupKeepsWordTokensAlignedWithDisplayText() {
+        val lrc = "[00:01.00]<00:01.00>春 の<00:02.00>光"
+
+        val line = LrcParser.parseKaraoke(lrc).single()
+
+        assertEquals("春の光", line.text)
+        assertEquals(line.text, line.words.joinToString("") { it.text })
+    }
+
+    @Test
+    fun cjkBoundarySpacesBetweenSingleCharTokensAreDropped() {
+        val lrc = "[00:01.00]<00:01.00>春 <00:01.50>の <00:02.00>光 <00:03.00>hello <00:04.00>world"
+
+        val line = LrcParser.parseKaraoke(lrc).single()
+
+        assertEquals("春の光 hello world", line.text)
+        assertEquals(listOf("春", "の", "光 ", "hello ", "world"), line.words.map { it.text })
+        assertEquals(line.text, line.words.joinToString("") { it.text })
+    }
 }

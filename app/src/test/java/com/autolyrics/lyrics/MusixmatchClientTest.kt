@@ -248,4 +248,56 @@ class MusixmatchClientTest {
         assertEquals("忘れない", lines[0].words[1].text)
         assertEquals(2_800L, lines[0].words[1].timeMs)
     }
+
+    @Test
+    fun manualTrackSearchParsesCandidatesAndSkipsInvalidRows() {
+        val json = """
+            {
+              "message": {
+                "header": {"status_code": 200},
+                "body": {
+                  "track_list": [
+                    {"track": {"commontrack_id": 123, "track_id": "tr1",
+                     "name": "Blue Spring", "primary_artist_name": "YOASOBI",
+                     "has_richsync": 1}},
+                    {"track": {"name": "No id", "primary_artist_name": "X"}},
+                    {"track": {"commontrack_id": 456, "name": "Idol",
+                     "primary_artist_name": "YOASOBI", "has_richsync": 0}}
+                  ]
+                }
+              }
+            }
+        """.trimIndent()
+
+        val candidates = MusixmatchClient.parseTrackSearchResponse(json)
+
+        assertEquals(listOf(123L, 456L), candidates.map { it.commonTrackId })
+        assertEquals("tr1", candidates.first().trackId)
+        assertEquals(true, candidates.first().hasRichSync)
+        assertEquals(null, candidates[1].trackId)
+        assertEquals("Idol", candidates[1].title)
+        assertEquals(false, candidates[1].hasRichSync)
+        assertEquals(
+            0,
+            MusixmatchClient.parseTrackSearchResponse(
+                """{"message":{"header":{"status_code":401},"body":{}}}"""
+            ).size
+        )
+    }
+
+    @Test
+    fun plainLyricsBodyDropsAdvertisementAndFooterNoise() {
+        val body = """
+            Advertisement
+
+            first line
+            second line
+            *** This lyrics text is used for informational purposes only.
+        """.trimIndent()
+
+        assertEquals(
+            listOf("first line", "second line"),
+            MusixmatchClient.cleanPlainBody(body)
+        )
+    }
 }

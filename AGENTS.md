@@ -9,13 +9,14 @@ Android app (`com.autolyrics`) that fetches synced/karaoke lyrics for whatever i
 ## Build environment (hard constraints)
 
 - JDK 21 installed → Gradle wrapper must stay >= 8.5 (currently 8.7).
+- Release builds run R8 with `proguard-android-optimize.txt` + no AGP default consumer rules; unit tests run unminified, so they cannot catch Gson/R8 reflection breakage (see DEVELOPMENT.md TypeToken incident) — smoke-test release network paths on-device.
 - Android SDK at `$HOME/android-sdk`; `local.properties` (`sdk.dir=...`) is gitignored and must be recreated in fresh clones.
 - Gates before declaring work done: `./gradlew assembleDebug testDebugUnitTest` (plain JUnit 4 tests under `app/src/test`, no Robolectric; keep new engine logic JVM-testable via `internal` pure functions).
 
 ## Architecture quick map
 
 - `media/MediaTracker` — singleton state owner: track changes, provider fetch, position, and translation trigger (`translateIfNeeded`), cancellation via per-purpose jobs.
-- `lyrics/` providers (`LrcLibClient`, `MusixmatchClient`, `PetitLyricsClient`, `SyncLrcClient`) ranked by `LyricsProviderResolver`; results cached by `LyricsCache` (STANDARD/KARAOKE variants).
+- `lyrics/` providers (`LrcLibClient`, `MusixmatchClient`, `PetitLyricsClient`, `SyncLrcClient`) ranked by `LyricsProviderResolver`; results cached by `LyricsCache` (STANDARD/KARAOKE variants). `ManualSearchDialog` (main-screen button) + `ManualSearch` implement the user-override LRCLIB search dialog; overrides apply through `MediaTracker.applyManualLyrics`.
 - Translation: two engines behind `lyrics/TranslationEngineUi` — `LyricsTranslator` (on-device ML Kit; language-pack download state machine) and `LlmTranslator` (OpenAI-compatible `/chat/completions`; JSON-array chunks, line-count validation, repair retries). Pref `translation_engine` routes; `TranslationCache` (filesDir/translation_cache, key = track+target+engine+model+sha256(source text), no expiry) is consulted first. Settings row `TranslationEngineView`, progress UI `TranslationStatusView` observes the active engine's `StateFlow`.
 - Providers must never block playback: all network work runs off main; `Fetch` jobs are cancelled per-track.
 

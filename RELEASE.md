@@ -59,7 +59,7 @@ Assume the next release is `X.Y.Z`.
 
 ### 1. Update local main
 
-```powershell
+```sh
 git switch main
 git pull origin main
 ```
@@ -75,7 +75,7 @@ versionName = "X.Y.Z"
 
 Check the diff:
 
-```powershell
+```sh
 git diff -- app/build.gradle.kts
 ```
 
@@ -83,7 +83,7 @@ git diff -- app/build.gradle.kts
 
 The commit message must start with `Release v`:
 
-```powershell
+```sh
 git add app/build.gradle.kts
 git commit -m "Release vX.Y.Z"
 git push origin main
@@ -93,7 +93,7 @@ That single push starts the release workflow. Do **not** create the tag manually
 
 Before pushing, verify that the derived tag is unused:
 
-```powershell
+```sh
 git ls-remote --tags origin refs/tags/vX.Y.Z
 ```
 
@@ -123,7 +123,7 @@ A traditional tag push remains supported.
 
 First commit the version bump to `main` with a normal non-release message and allow ordinary CI to pass:
 
-```powershell
+```sh
 git add app/build.gradle.kts
 git commit -m "Bump version to X.Y.Z"
 git push origin main
@@ -131,13 +131,13 @@ git push origin main
 
 Verify:
 
-```powershell
-Select-String -Path .\app\build.gradle.kts -Pattern 'versionCode|versionName'
+```sh
+grep -E 'versionCode|versionName' app/build.gradle.kts
 ```
 
 Then create the **exact matching tag**:
 
-```powershell
+```sh
 git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
@@ -226,10 +226,10 @@ For a functional smoke test, install the release APK and verify:
 
 A local `.env` can be used for provider configuration, but it does not reproduce GitHub's repository-secret injection exactly.
 
-```powershell
-.\gradlew.bat testDebugUnitTest
-.\gradlew.bat lintDebug
-.\gradlew.bat assembleRelease
+```sh
+./gradlew testDebugUnitTest
+./gradlew lintDebug
+./gradlew assembleRelease
 ```
 
 Output:

@@ -116,7 +116,7 @@ A miss is classified TRANSIENT vs GENUINE by leg outcome. Every client helper th
 
 Debug logging:
 
-```powershell
+```sh
 adb logcat -s Musixmatch:D SyncLRC:D ProviderResolver:D PetitLyrics:D
 ```
 
@@ -340,8 +340,8 @@ Timing tags are removed to recover exact `LyricLine.text`. Every raw substring b
 
 Copy the tracked template:
 
-```powershell
-Copy-Item .env.example .env
+```sh
+cp .env.example .env
 ```
 
 Fill in:
@@ -508,10 +508,10 @@ Release workflow details are in `RELEASE.md`.
 
 Run before merging provider/resolver changes:
 
-```powershell
-.\gradlew.bat testDebugUnitTest
-.\gradlew.bat assembleDebug
-.\gradlew.bat lintDebug
+```sh
+./gradlew testDebugUnitTest
+./gradlew assembleDebug
+./gradlew lintDebug
 ```
 
 Automated coverage should retain:

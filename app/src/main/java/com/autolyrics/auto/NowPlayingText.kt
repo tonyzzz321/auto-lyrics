@@ -18,9 +18,6 @@ internal object NowPlayingText {
     /** Width of the karaoke bracket pair 【 + 】. */
     const val KARAOKE_BRACKETS_WIDTH = 4
 
-    /** Shown in the subtitle when nothing follows (last line of the song). */
-    const val END_MARK = "♪"
-
     private val WHITESPACE = Regex("\\s+")
 
     fun charWidth(codePoint: Int): Int {

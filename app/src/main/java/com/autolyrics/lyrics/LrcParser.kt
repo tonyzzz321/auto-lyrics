@@ -2,6 +2,7 @@ package com.autolyrics.lyrics
 
 import com.autolyrics.model.LyricLine
 import com.autolyrics.model.LyricWord
+import com.autolyrics.util.LyricDisplay
 
 object LrcParser {
 
@@ -62,15 +63,19 @@ object LrcParser {
     }
 
     fun parse(lrc: String): List<LyricLine> {
-        return lrc.lines()
-            .flatMap { line -> parseLine(line) }
-            .sortedBy { it.timeMs }
+        return LyricDisplay.stripNonLyric(
+            lrc.lines()
+                .flatMap { line -> parseLine(line) }
+                .sortedBy { it.timeMs }
+        )
     }
 
     fun parseKaraoke(lrc: String): List<LyricLine> {
-        return lrc.lines()
-            .flatMap { line -> parseKaraokeLine(line) }
-            .sortedBy { it.timeMs }
+        return LyricDisplay.stripNonLyric(
+            lrc.lines()
+                .flatMap { line -> parseKaraokeLine(line) }
+                .sortedBy { it.timeMs }
+        )
     }
 
     private fun parseLine(line: String): List<LyricLine> {

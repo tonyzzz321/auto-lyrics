@@ -19,18 +19,61 @@ internal object LyricDisplay {
 
     private val SYMBOL_STRINGS = setOf("♪", "♫", "♬", "♩", "🎵", "🎶")
 
+    /** Bracketed non-lyric tags: instrumental statements AND section
+     * headers ([Verse], 【副歌】…). Neither is sung, so neither is a lyric
+     * line: ingestion strips everything this set recognizes. */
+    private val NON_LYRIC_TAGS = setOf(
+        "music", "instrumental", "音乐", "纯音乐",
+        "verse", "chorus", "bridge", "intro", "outro", "hook", "refrain",
+        "prechorus", "postchorus", "interlude", "solo", "chorusline",
+        "副歌", "主歌", "間奏", "前奏", "尾奏", "说唱"
+    )
+
+    /**
+     * Production-credit lines. Providers (SyncLRC's sources most often) ship
+     * "词：林夕" / "曲：Paul Gray" as TIMED rows, so without this filter the
+     * credits render and sing like sung lyrics ahead of the first real line.
+     * A colon line is a credit only when it STARTS with a known label; the
+     * By-form must be a short label prefix of a short tail, so sung lines
+     * merely containing colons ("我说：你好") or the words ("Word by word")
+     * survive.
+     */
+    fun isCreditLine(text: String): Boolean {
+        val t = text.trim()
+        if (t.isEmpty()) return false
+        val colon = t.indexOfFirst { it == ':' || it == '：' }
+        if (colon in 1..CREDIT_LABEL_MAX_LEN && t.substring(colon + 1).isNotBlank()) {
+            val label = t.substring(0, colon).trim().lowercase()
+            if (label in CREDIT_LABELS) return true
+        }
+        val lower = t.lowercase()
+        return CREDIT_PHRASES.any { phrase ->
+            lower.startsWith(phrase) &&
+                t.length > phrase.length && (t[phrase.length] == ' ' || t[phrase.length] == ':' || t[phrase.length] == '：') &&
+                t.length <= 64 && t.count { it == ' ' } <= 5
+        }
+    }
+
     /**
      * Provider instrumental lines come in many shapes: single or repeated
-     * note glyphs, note emoji, or bracketed [Music]/[纯音乐] tags. All of
-     * them mean the same as a blank line.
+     * note glyphs, note emoji, or bracketed [Music]/[纯音乐] tags; section
+     * headers ([Verse], [Chorus]) name a song part without any sung words.
+     * All of them mean the same as a blank line.
      */
     fun isSymbolText(text: String): Boolean {
         val t = text.trim()
         if (t.isEmpty()) return true
-        val inner = t.removeSurroundingBrackets()
-        if (inner.isNotBlank() &&
-            inner.lowercase() in setOf("music", "instrumental", "音乐", "纯音乐")
+        // Bracketed tags: letters-only key folds numbered headers
+        // ([Verse 1], 【Chorus 2】) onto their base tag; bracketed lyric
+        // text that merely contains digits still matches nothing in the
+        // tag set. UNBRACKETED text never enters this set: a whole sung
+        // line reading "Verse" is lyrics - only the standalone CJK
+        // markers below ship unbracketed as instrumental statements.
+        val inner = t.stripBrackets()
+        if (inner != null && inner.isNotBlank() &&
+            inner.filter { it.isLetter() }.lowercase() in NON_LYRIC_TAGS
         ) return true
+        if (t in BARE_NON_LYRIC) return true
         var i = 0
         while (i < t.length) {
             val ch = t[i]
@@ -56,23 +99,53 @@ internal object LyricDisplay {
         if (isSymbolText(text)) MUSIC_SYMBOL else text.trim()
 
     /**
-     * Index of the last line with real words, or -1 when every line is an
-     * instrumental marker. Trailing symbol lines mean "outro", which the
-     * sung line already conveys by staying lit, so renderers cap their lists
-     * at this index and show no music symbols at the end of a song.
+     * Ingest filter: everything a provider ships that is not a sung line -
+     * blanks, note-glyph runs, [Music] tags, section headers - removed at
+     * parse time, so every consumer downstream (gates, scoring, cache,
+     * translation, display) sees lyric-only payloads. Instrumental stretches
+     * are no longer payload content; they are derived from the timing
+     * silence between lines (see InstrumentalMarkers).
      */
-    fun lastMeaningfulIndex(lines: List<LyricLine>): Int {
-        for (i in lines.indices.reversed()) {
-            if (!isSymbolText(lines[i].text)) return i
-        }
-        return -1
-    }
+    fun stripNonLyric(lines: List<LyricLine>): List<LyricLine> =
+        lines.filterNot { isSymbolText(it.text) || isCreditLine(it.text) }
 
-    private fun String.removeSurroundingBrackets(): String {
+    private const val CREDIT_LABEL_MAX_LEN = 14
+
+    /** Labels accepted before a colon in a credit line ("词：林夕",
+     * "Lyrics: X", "OP: …"). Matched exactly on the trimmed, lowercased
+     * prefix, so no loose substring ever fires. */
+    private val CREDIT_LABELS = setOf(
+        "词", "作詞", "作词", "歌詞", "歌词", "lyrics", "lyric", "words", "word",
+        "曲", "作曲", "編曲", "编曲", "音乐", "音樂", "music", "composer", "compose",
+        "arrangement", "arranged", "arr",
+        "制作人", "製作人", "producer", "produced",
+        "监制", "監製", "出品", "出品人", "出版", "publisher", "published",
+        "原唱", "原創", "原曲", "original",
+        "演唱", "主唱", "vocal", "vocals", "feat",
+        "混音", "mixed", "mix", "recording", "recorded",
+        "words & music", "words and music",
+        "op", "sp"
+    )
+
+    /** By-form credit openers ("Lyrics by John Smith", "Lyricist: X"). */
+    private val CREDIT_PHRASES = listOf(
+        "lyrics by", "words by", "music by", "composed by", "written by",
+        "arranged by", "produced by", "lyricist", "composer",
+        "original singer", "original artist"
+    )
+
+    /** Standalone markers providers ship WITHOUT brackets. Restricted to
+     * CJK: a lone sung line reading "間奏" is a section tag, one reading
+     * "Verse" is lyrics. */
+    private val BARE_NON_LYRIC = setOf(
+        "音乐", "纯音乐", "副歌", "主歌", "間奏", "前奏", "尾奏", "说唱"
+    )
+
+    private fun String.stripBrackets(): String? {
         val pairs = listOf('[' to ']', '(' to ')', '【' to '】', '［' to '］')
         for ((open, close) in pairs) {
             if (length >= 2 && first() == open && last() == close) return substring(1, length - 1).trim()
         }
-        return this
+        return null
     }
 }

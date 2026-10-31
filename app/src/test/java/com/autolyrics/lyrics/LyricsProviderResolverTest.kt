@@ -353,7 +353,7 @@ class LyricsProviderResolverTest {
         )
         val junk = symbolCandidate(
             "LRCLIB",
-            listOf("♪", "♪ ♪", "🎵", "[Music]", "(Instrumental)", "   ")
+            listOf("♪", "♪ ♪", "🎵", "[Music]", "(Instrumental)", "词：林夕", "Lyrics by X", "   ")
         )
         val real = candidate(
             provider = "Musixmatch",

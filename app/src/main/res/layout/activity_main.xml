@@ -183,6 +183,70 @@
         android:paddingBottom="10dp"
         android:visibility="gone">
 
+        <!-- Media source section title -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Media source"
+            android:textColor="#8888AA"
+            android:textSize="12sp"
+            android:fontFamily="sans-serif-medium"
+            android:layout_marginBottom="8dp" />
+
+        <!-- Media apps whitelist row -->
+        <LinearLayout
+            android:id="@+id/row_media_apps"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:background="?attr/selectableItemBackground"
+            android:clickable="true"
+            android:focusable="true">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Media apps"
+                android:textColor="#CCCCDD"
+                android:textSize="13sp" />
+
+            <com.autolyrics.ui.SettingInfoView
+                android:id="@+id/info_media_apps"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:layout_marginStart="4dp"
+                android:text="ⓘ"
+                android:textColor="#777792"
+                android:textSize="12sp"
+                android:gravity="center"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Only follow media notifications from the apps you choose. Applies to the phone display and Android Auto." />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <TextView
+                android:id="@+id/tv_media_apps_value"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="All apps"
+                android:textColor="#8888AA"
+                android:textSize="13sp"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:gravity="end" />
+        </LinearLayout>
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#2A2A3A"
+            android:layout_marginTop="12dp"
+            android:layout_marginBottom="8dp" />
+
         <!-- Phone UI section title -->
         <TextView
             android:layout_width="wrap_content"

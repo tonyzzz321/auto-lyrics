@@ -8,8 +8,8 @@ Auto Lyrics is an Android app that follows the active media session and displays
 - **Lyrics / Sync / More browse tabs** — lyrics are the primary view, timing adjustment is kept separate, and detailed track/provider information lives under More.
 - **Fixed 5-row lyric window** — the Lyrics tab reads forward from the pinned current line with a translation line stacked under each lyric line; near the song end it simply shows fewer rows.
 - **Fixed 3-row Sync preview** — current line plus surrounding context while adjusting the Android Auto offset.
-- **Now-playing lyric line** — the Android Auto now-playing card carries the current lyric line, counts down instrumentals with music glyphs, previews the coming lyric, and falls back to a plain title/artist player card during intro, outro, and lyric failures.
-- **Multi-provider resolution** — LRCLIB, Musixmatch, configured PetitLyrics, and Karaoke-only SyncLRC candidates are compared using metadata match, lyric quality, and source confidence.
+- **Now-playing lyric line** — the Android Auto now-playing card carries the current lyric line and falls back to a plain title/artist player card during intro, instrumentals, outro, and lyric failures — with a 4→1 music-glyph countdown into each coming lyric during the final seconds of any gap.
+- **Multi-provider resolution** — LRCLIB, Musixmatch, configured PetitLyrics, and SyncLRC candidates are compared using metadata match, lyric quality, and source confidence.
 - **Karaoke-aware selection** — normal mode remains accuracy-first; Karaoke mode may prefer a real WORD_SYNC candidate when its recording match and payload quality are near-equivalent to the normal winner.
 - **Musixmatch RichSync** — when available, Musixmatch word-level timing is exposed as karaoke/word sync; line-synchronized subtitles are used as fallback.
 - **SyncLRC Enhanced LRC** — queried on every track change for additional fine-grained timing sourced through its LRCLIB/LDDC/syncedlyrics stack (NetEase, QQ, Kugou included); token-bearing karaoke wins over the aggregator's synced and plain tiers.
@@ -18,6 +18,7 @@ Auto Lyrics is an Android app that follows the active media session and displays
 - **Synced and plain fallback** — synchronized lyrics are preferred; LRCLIB plain text remains a last-resort fallback.
 - **Robust metadata matching** — handles recording/version qualifiers, romanized-vs-native-script artist names, and multi-contributor metadata such as `Alan Menken, Howard Ashman, Samuel E. Wright, Disney`.
 - **Works with normal media-session players** — Spotify, YouTube Music, Apple Music, Poweramp, and other apps that expose usable Android media metadata.
+- **Per-app media source** — the Media source section (first in settings) restricts lyrics to chosen apps' media notifications; applies to the phone and Android Auto alike. Default follows every media player.
 - **Demand-aware provider work** — active media sessions are monitored continuously, but lyric providers are queried only while the phone UI is in use or Android Auto projection is connected.
 - **Phone companion UI** — lyrics remain available on the phone, including the performance/karaoke view with translated sublines.
 - **Local cache** — normal and Karaoke selections use separate cache variants; word timestamps are preserved (no provider ships word-end times; sung ends are derived at display time). Entries are permanent; applying a Manual Search result is the only refresh path.
@@ -150,11 +151,11 @@ The primary browse tab. It shows the track header plus a moving lyric window:
    next line
 ```
 
-The current line is pinned to the first row (near the song end the list simply shows fewer rows), every row's translated line starts at the same x as its lyric line, and instrumental stretches — intro included — render as a **countdown row**: one `♪` glyph per remaining second until the next lyric (max four). Static symbol rows no longer exist anywhere; provider `♪`/`[Music]` tags are absorbed by the countdown.
+The current line is pinned to the first row (near the song end the list simply shows fewer rows), every row's translated line starts at the same x as its lyric line, and instrumental stretches — intro included — render as a **countdown row**: one `♪` glyph per remaining second until the next lyric (max four). Instrumentals are derived from the timing gap, not from tags: non-lyric lines (`♪` runs, `[Music]`/`[Verse]`-style tags, section headers, timed production credits like `词：林夕`/`Lyrics by …`) are stripped when lyrics are downloaded, so they never render anywhere.
 
 ### Karaoke
 
-A Chinese-KTV-style two-row board for line-timed lyrics, under the same song-info header as the Lyrics tab: the line being sung (marked with a triangle) sits on one row while its partner previews on the other — top rows left-justified, bottom rows right-justified (emulated with width-modelled padding auto-sized from the head unit's own icon-size hint, fine-tunable per car from the phone's Karaoke edge setting). Each side advances two lines when its own line finishes, translations ride directly under their lyric line, instrumental stretches (intro and mid-song) tick the per-second countdown instead of symbol rows, and rows seek on click. Non-line-timed lyrics fall back to the Lyrics tab's layout.
+A Chinese-KTV-style two-row board for line-timed lyrics, under the same song-info header as the Lyrics tab: the line being sung (marked with a triangle) sits on one row while its partner previews on the other — top rows left-justified, bottom rows right-justified (emulated with width-modelled padding auto-sized from the head unit's own icon-size hint, fine-tunable per car from the phone's Karaoke edge setting). Each side advances two lines when its own line finishes, translations ride directly under their lyric line, instrumental stretches (intro and mid-song) tick the per-second countdown — the countdown row owns its board slot like any lyric, so with an intro countdown the first line is sung from the bottom row — and rows seek on click. Not-synced lyrics ride the same board on a position estimate.
 
 ### Sync
 
@@ -170,10 +171,11 @@ Shows detailed information such as title, artist, album, provider, synchronizati
 2. The selected media session provides title, artist, album, duration, playback state, and position.
 3. Metadata is cleaned before lookup.
 4. LRCLIB, Musixmatch, and SyncLRC launch in parallel on every track change; configured PetitLyrics joins them. Karaoke mode no longer gates who is queried — it only changes how the winner is selected and which cache variant stores it.
-5. Provider-specific lookup logic gathers plausible candidates. Musixmatch locally validates the matcher result from its mobile macro response. SyncLRC is accepted only when the response contains a genuine Enhanced-LRC `karaoke` payload.
-6. `LyricsProviderResolver` discards candidates whose payload has no real lyric line at all (all blank/music-symbol lines never win — the next provider with actual text takes over, and an all-junk field reads as not-found), then validates metadata and compares candidate quality/source confidence.
-7. In normal mode, the highest-quality synchronized recording match wins. In Karaoke mode, a real WORD_SYNC candidate can replace that winner only when metadata and payload quality remain near-equivalent.
-8. The selected result is written to a mode-specific cache variant and kept permanently; the provider race never re-runs for that track. Applying a Manual Search result is the only way to replace a cached entry (it also forces retranslation).
+5. Provider-specific lookup logic gathers plausible candidates. Musixmatch locally validates the matcher result from its mobile macro response. SyncLRC contributes every tier its aggregate returns (token-timed karaoke first, then synced, then plain).
+6. Every payload is sanitized at parse: blank lines, `♪`/`🎵`/`[Music]` lines, section headers (`[Verse]`, `[Chorus]`, `【副歌】`, …), and production-credit rows (`词：林夕`, `曲：Paul Gray`, `Lyrics by …`) are stripped before anything is stored or displayed, and instrumentals are derived from the remaining timing.
+8. `LyricsProviderResolver` discards candidates whose payload has no real lyric line at all (all blank/music-symbol/credit lines never win — the next provider with actual text takes over, and an all-junk field reads as not-found), then validates metadata and compares candidate quality/source confidence. If the whole race dies on transport errors (provider overload), one automatic retry fires after 8 s — genuine "no lyrics anywhere" answers are never retried.
+9. In normal mode, the highest-quality synchronized recording match wins. In Karaoke mode, a real WORD_SYNC candidate can replace that winner only when metadata and payload quality remain near-equivalent.
+10. The selected result is written to a mode-specific cache variant and kept permanently; the provider race never re-runs for that track. Applying a Manual Search result is the only way to replace a cached entry (it also forces retranslation).
 
 This design is intentionally not “first provider to respond wins”; normal request latency is not part of the score. A provider only loses due to speed when it exceeds its timeout budget and therefore fails to produce a candidate for that comparison.
 

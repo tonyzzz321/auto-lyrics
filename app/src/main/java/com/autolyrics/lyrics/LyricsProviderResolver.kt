@@ -100,15 +100,16 @@ object LyricsProviderResolver {
      * Such a payload renders as nothing (the display sequence skips every
      * symbol line), and accepting it would cache the track permanently as a
      * success, out-competing the next-best provider that has real text. The
-     * detector is the display's own `isSymbolText`, so acceptance and
-     * rendering can never disagree about what counts as lyric content.
+     * detector is the display's own `isSymbolText`/`isCreditLine` pair, so
+     * acceptance and rendering can never disagree about what counts as
+     * lyric content.
      */
     internal fun hasDisplayableContent(candidate: LyricsProviderCandidate): Boolean =
         hasDisplayableLines(candidate.lines)
 
     /** Line-list form of the junk gate, shared with the Manual Search rows. */
     internal fun hasDisplayableLines(lines: List<LyricLine>): Boolean =
-        lines.any { !LyricDisplay.isSymbolText(it.text) }
+        lines.any { !LyricDisplay.isSymbolText(it.text) && !LyricDisplay.isCreditLine(it.text) }
 
     internal fun hasUsableWordTiming(candidate: LyricsProviderCandidate): Boolean {
         return candidate.syncKind == LyricsProviderCandidate.SyncKind.WORD_SYNC &&

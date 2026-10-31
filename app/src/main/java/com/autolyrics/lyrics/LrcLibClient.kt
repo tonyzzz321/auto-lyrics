@@ -80,7 +80,8 @@ object LrcLibClient {
         trackName: String,
         artistName: String,
         albumName: String,
-        durationSec: Int
+        durationSec: Int,
+        transport: MutableList<String>? = null
     ): LrcLibResponse? {
         val candidates = LinkedHashMap<String, LrcLibResponse>()
 
@@ -104,7 +105,7 @@ object LrcLibClient {
         // metadata. Fast-path it when our local validation also considers it an
         // excellent synchronized match, avoiding several unnecessary searches.
         if (durationSec > 0 && albumName.isNotBlank()) {
-            val exact = getExact(trackName, artistName, albumName, durationSec)
+            val exact = getExact(trackName, artistName, albumName, durationSec, transport)
             addCandidate(exact)
             if (exact != null && !exact.syncedLyrics.isNullOrBlank()) {
                 val exactScore = scoreCandidate(
@@ -145,7 +146,7 @@ object LrcLibClient {
         }
 
         structuredQueries.forEach { query ->
-            addCandidates(searchAll(query.trackName, query.artistName, query.albumName))
+            addCandidates(searchAll(query.trackName, query.artistName, query.albumName, transport = transport))
         }
 
         selectBest(
@@ -162,7 +163,7 @@ object LrcLibClient {
         // concatenated with commas). If artist-constrained FTS could not find a
         // usable synchronized result, broaden discovery by title only and let the
         // local matcher validate title, contributor components, duration and album.
-        addCandidates(searchAll(strippedTitle, artistName = null, albumName = null))
+        addCandidates(searchAll(strippedTitle, artistName = null, albumName = null, transport = transport))
 
         selectBest(
             candidates.values,
@@ -504,7 +505,8 @@ object LrcLibClient {
         trackName: String,
         artistName: String,
         albumName: String,
-        durationSec: Int
+        durationSec: Int,
+        transport: MutableList<String>? = null
     ): LrcLibResponse? {
         val urlBuilder = "$BASE_URL/get".toHttpUrl().newBuilder()
             .addQueryParameter("track_name", trackName)
@@ -512,7 +514,7 @@ object LrcLibClient {
             .addQueryParameter("album_name", albumName)
             .addQueryParameter("duration", durationSec.toString())
 
-        return executeSingle(urlBuilder.build().toString())
+        return executeSingle(urlBuilder.build().toString(), transport)
     }
 
     /**
@@ -552,7 +554,8 @@ object LrcLibClient {
         artistName: String?,
         albumName: String?,
         diagnostics: MutableList<String>? = null,
-        label: String = "search"
+        label: String = "search",
+        transport: MutableList<String>? = null
     ): List<LrcLibResponse> {
         val urlBuilder = "$BASE_URL/search".toHttpUrl().newBuilder()
             .addQueryParameter("track_name", trackName)
@@ -564,7 +567,7 @@ object LrcLibClient {
             urlBuilder.addQueryParameter("album_name", albumName)
         }
 
-        return executeList(urlBuilder.build().toString(), diagnostics, label)
+        return executeList(urlBuilder.build().toString(), diagnostics, label, transport)
     }
 
     private fun searchFreeText(
@@ -579,7 +582,10 @@ object LrcLibClient {
         return executeList(url, diagnostics, label)
     }
 
-    private fun executeSingle(url: String): LrcLibResponse? {
+    private fun executeSingle(
+        url: String,
+        transport: MutableList<String>? = null
+    ): LrcLibResponse? {
         val request = Request.Builder()
             .url(url)
             .header("User-Agent", USER_AGENT)
@@ -587,10 +593,16 @@ object LrcLibClient {
 
         return try {
             client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@use null
+                if (!response.isSuccessful) {
+                    // 404 is LRCLIB's clean "this exact track has no lyrics";
+                    // anything else (429 overload, 5xx) is a transient death.
+                    if (response.code != 404) transport?.add("HTTP ${response.code}")
+                    return@use null
+                }
                 gson.fromJson(response.body?.string(), LrcLibResponse::class.java)
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            transport?.add("network: ${e.javaClass.simpleName}")
             null
         }
     }
@@ -598,7 +610,8 @@ object LrcLibClient {
     private fun executeList(
         url: String,
         diagnostics: MutableList<String>? = null,
-        label: String = "search"
+        label: String = "search",
+        transport: MutableList<String>? = null
     ): List<LrcLibResponse> {
         val request = Request.Builder()
             .url(url)
@@ -609,6 +622,7 @@ object LrcLibClient {
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     diagnostics?.plusAssign("HTTP ${response.code} $label")
+                    transport?.add("HTTP ${response.code}")
                     return@use emptyList()
                 }
                 // Array class literal survives R8 without Signature/TypeToken keeps;
@@ -621,6 +635,7 @@ object LrcLibClient {
                 parsed
             }
         } catch (e: Exception) {
+            transport?.add("network: ${e.javaClass.simpleName}")
             diagnostics?.plusAssign("${e.javaClass.simpleName} $label")
             emptyList()
         }

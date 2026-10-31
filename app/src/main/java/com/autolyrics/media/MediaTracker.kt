@@ -39,6 +39,30 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+/**
+ * One provider leg of the auto race: its candidate (null on any outcome),
+ * whether the 5 s budget killed it, and the transport errors it recorded
+ * (HTTP 429/5xx, network deaths). `failed` distinguishes a leg that DIED
+ * from one that cleanly answered "no lyrics".
+ */
+internal data class ProviderAttempt(
+    val provider: String,
+    val candidate: LyricsProviderCandidate?,
+    val timedOut: Boolean,
+    val elapsedMs: Long,
+    val transportErrors: List<String> = emptyList()
+) {
+    val failed: Boolean
+        get() = timedOut || transportErrors.isNotEmpty()
+}
+
+/**
+ * Pure classifier behind the one-shot auto retry: true when no provider
+ * offered a candidate and at least one leg failed on transport rather
+ * than reporting a clean miss.
+ */
+internal fun isTransientMiss(attempts: List<ProviderAttempt>): Boolean =
+    attempts.none { it.candidate != null } && attempts.any { it.failed }
 class MediaTracker private constructor(context: Context) {
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -451,7 +475,21 @@ class MediaTracker private constructor(context: Context) {
                     return@launch
                 }
 
-                val decision = fetchBestLyrics(track, preferWordSync)
+                var decision = fetchBestLyrics(track, preferWordSync)
+                if (decision.candidate == null && decision.transient) {
+                    // One-shot backoff retry (never a loop): every leg died
+                    // without any scoreable candidate - provider overload
+                    // windows (LRCLIB 503s, SyncLRC aggregation outages)
+                    // clear in seconds, and a track-change re-selection
+                    // should not be the user's job.
+                    delay(AUTO_RETRY_BACKOFF_MS)
+                    if (_state.value.track == track &&
+                        _state.value.status == LyricsStatus.LOADING &&
+                        prefs.getBoolean(AA_KARAOKE_ENABLED_KEY, true) == preferWordSync
+                    ) {
+                        decision = fetchBestLyrics(track, preferWordSync)
+                    }
+                }
                 val result = decision.candidate
 
                 withContext(Dispatchers.Main) {
@@ -504,15 +542,9 @@ class MediaTracker private constructor(context: Context) {
         }
     }
 
-    private data class ProviderAttempt(
-        val provider: String,
+    internal data class FetchDecision(
         val candidate: LyricsProviderCandidate?,
-        val timedOut: Boolean,
-        val elapsedMs: Long
-    )
-
-    private data class FetchDecision(
-        val candidate: LyricsProviderCandidate?
+        val transient: Boolean = false
     )
 
     private suspend fun fetchBestLyrics(
@@ -525,20 +557,20 @@ class MediaTracker private constructor(context: Context) {
         // to interrupt the synchronous OkHttp work rather than merely abandoning
         // the Deferred while the blocking call keeps this fetch waiting.
         val lrcLibDeferred = async {
-            fetchProviderWithBudget("LRCLIB") { fetchFromLrcLib(track) }
+            fetchProviderWithBudget("LRCLIB") { t -> fetchFromLrcLib(track, t) }
         }
         val petitLyricsDeferred = if (PetitLyricsClient.isConfigured) {
             async {
-                fetchProviderWithBudget("PetitLyrics") { fetchFromPetitLyrics(track) }
+                fetchProviderWithBudget("PetitLyrics") { t -> fetchFromPetitLyrics(track, t) }
             }
         } else {
             null
         }
         val musixmatchDeferred = async {
-            fetchProviderWithBudget("Musixmatch") { fetchFromMusixmatch(track) }
+            fetchProviderWithBudget("Musixmatch") { t -> fetchFromMusixmatch(track, t) }
         }
         val syncLrcDeferred = async {
-            fetchProviderWithBudget("SyncLRC") { fetchFromSyncLrc(track) }
+            fetchProviderWithBudget("SyncLRC") { t -> fetchFromSyncLrc(track, t) }
         }
 
         val lrcAttempt = lrcLibDeferred.await()
@@ -595,53 +627,67 @@ class MediaTracker private constructor(context: Context) {
             )
         }
 
-        FetchDecision(candidate = selected?.candidate)
+        // A miss is TRANSIENT when nothing was even scoreable and at least
+        // one leg died (timeout, 429/5xx, network): the same race a moment
+        // later can succeed. Providers that answered cleanly with nothing
+        // are a genuine not-found and must not burn a retry.
+        FetchDecision(
+            candidate = selected?.candidate,
+            transient = selected == null && isTransientMiss(attempts)
+        )
     }
+
 
     private suspend fun fetchProviderWithBudget(
         provider: String,
-        block: () -> LyricsProviderCandidate?
+        block: (MutableList<String>) -> LyricsProviderCandidate?
     ): ProviderAttempt {
         val started = SystemClock.elapsedRealtime()
+        val transport = mutableListOf<String>()
         return try {
             val candidate = withTimeout(PROVIDER_BUDGET_MS) {
-                runInterruptible(Dispatchers.IO) { block() }
+                runInterruptible(Dispatchers.IO) { block(transport) }
             }
             ProviderAttempt(
                 provider = provider,
                 candidate = candidate,
                 timedOut = false,
-                elapsedMs = SystemClock.elapsedRealtime() - started
+                elapsedMs = SystemClock.elapsedRealtime() - started,
+                transportErrors = transport.toList()
             )
         } catch (e: TimeoutCancellationException) {
             ProviderAttempt(
                 provider = provider,
                 candidate = null,
                 timedOut = true,
-                elapsedMs = SystemClock.elapsedRealtime() - started
+                elapsedMs = SystemClock.elapsedRealtime() - started,
+                transportErrors = transport.toList()
             )
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             ProviderAttempt(
                 provider = provider,
                 candidate = null,
                 timedOut = false,
-                elapsedMs = SystemClock.elapsedRealtime() - started
+                elapsedMs = SystemClock.elapsedRealtime() - started,
+                transportErrors = transport.toList() + "fatal: ${e.javaClass.simpleName}"
             )
         }
     }
 
-    private fun fetchFromPetitLyrics(track: TrackInfo): LyricsProviderCandidate? {
+    private fun fetchFromPetitLyrics(track: TrackInfo, transport: MutableList<String>): LyricsProviderCandidate? {
         if (!PetitLyricsClient.isConfigured) return null
 
         val result = try {
             PetitLyricsClient.getSyncedLyrics(
                 album = track.album,
                 artist = track.artist,
-                title = track.title
+                title = track.title,
+                transport = transport
             )
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            transport.add("fatal: ${e.javaClass.simpleName}")
             null
         } ?: return null
 
@@ -669,10 +715,11 @@ class MediaTracker private constructor(context: Context) {
         )
     }
 
-    private fun fetchFromMusixmatch(track: TrackInfo): LyricsProviderCandidate? {
+    private fun fetchFromMusixmatch(track: TrackInfo, transport: MutableList<String>): LyricsProviderCandidate? {
         val result = try {
-            MusixmatchClient.getLyrics(track, prefs)
-        } catch (_: Exception) {
+            MusixmatchClient.getLyrics(track, prefs, transport)
+        } catch (e: Exception) {
+            transport.add("fatal: ${e.javaClass.simpleName}")
             null
         } ?: return null
 
@@ -699,10 +746,11 @@ class MediaTracker private constructor(context: Context) {
         )
     }
 
-    private fun fetchFromSyncLrc(track: TrackInfo): LyricsProviderCandidate? {
+    private fun fetchFromSyncLrc(track: TrackInfo, transport: MutableList<String>): LyricsProviderCandidate? {
         val result = try {
-            SyncLrcClient.getKaraokeLyrics(track)
-        } catch (_: Exception) {
+            SyncLrcClient.getKaraokeLyrics(track, transport)
+        } catch (e: Exception) {
+            transport.add("fatal: ${e.javaClass.simpleName}")
             null
         } ?: return null
 
@@ -732,7 +780,7 @@ class MediaTracker private constructor(context: Context) {
         )
     }
 
-    private fun fetchFromLrcLib(track: TrackInfo): LyricsProviderCandidate? {
+    private fun fetchFromLrcLib(track: TrackInfo, transport: MutableList<String>): LyricsProviderCandidate? {
         val durationSec = if (track.durationMs > 0) (track.durationMs / 1000).toInt() else 0
 
         val result = try {
@@ -740,9 +788,11 @@ class MediaTracker private constructor(context: Context) {
                 trackName = track.title,
                 artistName = track.artist,
                 albumName = track.album,
-                durationSec = durationSec
+                durationSec = durationSec,
+                transport = transport
             )
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            transport.add("fatal: ${e.javaClass.simpleName}")
             null
         } ?: return null
 
@@ -1144,6 +1194,8 @@ class MediaTracker private constructor(context: Context) {
 
     companion object {
         private const val PROVIDER_BUDGET_MS = 5_000L
+        /** Single backoff pause for the one-shot transient-miss retry. */
+        private const val AUTO_RETRY_BACKOFF_MS = 8_000L
         /** Per-provider wall-clock cap for one manual search leg. */
         private const val MANUAL_SEARCH_LEG_TIMEOUT_MS = 10_000L
         private const val PROVIDER_RESOLVER_TAG = "ProviderResolver"

@@ -75,7 +75,7 @@ object SyncLrcClient {
         @SerializedName("results") val results: List<ItunesTrack>? = null
     )
 
-    fun getKaraokeLyrics(track: TrackInfo): SyncLrcResult? {
+    fun getKaraokeLyrics(track: TrackInfo, transport: MutableList<String>? = null): SyncLrcResult? {
         if (track.title.isBlank() || track.artist.isBlank()) return null
 
         val url = BASE_URL.toHttpUrl().newBuilder()
@@ -107,11 +107,15 @@ object SyncLrcClient {
                 if (response.isSuccessful) {
                     return@use parseApiResponse(response.body?.string().orEmpty(), track)
                 }
+                // 404 is the catalog's clean miss; 5xx (aggregation deaths)
+                // and everything else are transient leg failures.
+                if (response.code != 404) transport?.add("HTTP ${response.code}")
                 null
-            } ?: itunesFallback(track)
+            } ?: itunesFallback(track, transport)
         } catch (e: Exception) {
+            transport?.add("network: ${e.javaClass.simpleName}")
             debugLog("request failed: ${e.javaClass.simpleName}: ${e.message.orEmpty()}")
-            itunesFallback(track)
+            itunesFallback(track, transport)
         }
     }
 
@@ -144,24 +148,32 @@ object SyncLrcClient {
      * cannot), each fetched as an exact-name `/lyrics` row. Shared by the
      * manual catalog fallback and the auto iTunes fallback.
      */
-    private fun itunesRows(title: String, artist: String): List<ApiResponse> {
+    private fun itunesRows(
+        title: String,
+        artist: String,
+        transport: MutableList<String>? = null
+    ): List<ApiResponse> {
         if (title.isBlank() || artist.isBlank()) return emptyList()
         val deadline = System.nanoTime() + java.util.concurrent.TimeUnit
             .SECONDS.toNanos(CATALOG_BUDGET_SEC)
         val rows = mutableListOf<ApiResponse>()
         val seen = mutableSetOf(title.trim().lowercase() + "\u0000" + artist.trim().lowercase())
-        for ((trackName, artistName) in itunesCandidates(title, artist)) {
+        for ((trackName, artistName) in itunesCandidates(title, artist, transport)) {
             if (System.nanoTime() > deadline) break
             val key = trackName.lowercase() + "\u0000" + artistName.lowercase()
             if (!seen.add(key)) continue
-            lyricsFor(trackName, artistName)?.let { rows += it }
+            lyricsFor(trackName, artistName, transport)?.let { rows += it }
             if (rows.size >= CATALOG_LOOKUP_LIMIT) break
         }
         return rows
     }
 
     /** Exact-name `/lyrics` fetch; null unless the row carries real text. */
-    private fun lyricsFor(title: String, artist: String): ApiResponse? {
+    private fun lyricsFor(
+        title: String,
+        artist: String,
+        transport: MutableList<String>? = null
+    ): ApiResponse? {
         if (title.isBlank()) return null
         val url = BASE_URL.toHttpUrl().newBuilder()
             .addQueryParameter("track", title.trim())
@@ -177,10 +189,14 @@ object SyncLrcClient {
             .build()
         return try {
             client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return@use null
+                if (!response.isSuccessful) {
+                    if (response.code != 404) transport?.add("HTTP ${response.code}")
+                    return@use null
+                }
                 val parsed = try {
                     gson.fromJson(response.body?.string(), ApiResponse::class.java)
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    transport?.add("parse: ${e.javaClass.simpleName}")
                     null
                 }
                 parsed?.takeIf { row ->
@@ -189,7 +205,8 @@ object SyncLrcClient {
                             .any { field -> !field.isNullOrBlank() }
                 }
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            transport?.add("network: ${e.javaClass.simpleName}")
             null
         }
     }
@@ -207,7 +224,11 @@ object SyncLrcClient {
             }
             .distinct()
 
-    private fun itunesCandidates(title: String, artist: String): List<Pair<String, String>> {
+    private fun itunesCandidates(
+        title: String,
+        artist: String,
+        transport: MutableList<String>? = null
+    ): List<Pair<String, String>> {
         val term = listOf(title, artist).filter { it.isNotBlank() }.joinToString(" ")
         val url = ITUNES_SEARCH_URL.toHttpUrl().newBuilder()
             .addQueryParameter("term", term)
@@ -223,6 +244,7 @@ object SyncLrcClient {
         return try {
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
+                    transport?.add("iTunes HTTP ${response.code}")
                     emptyList()
                 } else {
                     parseItunesResponse(response.body?.string().orEmpty())
@@ -235,7 +257,8 @@ object SyncLrcClient {
                         }
                 }
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            transport?.add("iTunes network: ${e.javaClass.simpleName}")
             emptyList()
         }
     }
@@ -283,12 +306,15 @@ object SyncLrcClient {
      * or live aggregation down while the DB behind `/lyrics` lookups is
      * healthy).
      */
-    private fun itunesFallback(track: TrackInfo): SyncLrcResult? {
+    private fun itunesFallback(
+        track: TrackInfo,
+        transport: MutableList<String>? = null
+    ): SyncLrcResult? {
         // Auto ladder: the exact /lyrics call with the session names already
         // failed above, and the DB-backed /search matches those same literal
         // names, so it adds almost nothing for a single auto winner. Go
         // straight to the website-style iTunes-resolved catalog lookup.
-        val best = pickBestCandidate(itunesRows(track.title, track.artist), track) ?: return null
+        val best = pickBestCandidate(itunesRows(track.title, track.artist, transport), track) ?: return null
         debugLog("catalog fallback selected '${best.track.orEmpty()}'")
         return parseResponse(best, track)
     }

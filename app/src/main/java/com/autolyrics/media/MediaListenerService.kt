@@ -5,10 +5,14 @@ import android.media.session.MediaController
 import android.media.session.MediaSession
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
+import android.content.SharedPreferences
 import android.os.Handler
 import android.os.Looper
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
+
+internal fun sessionAllowed(pkg: String, ownPackage: String, monitored: Set<String>): Boolean =
+    pkg != ownPackage && (monitored.isEmpty() || pkg in monitored)
 
 class MediaListenerService : NotificationListenerService() {
 
@@ -25,6 +29,25 @@ class MediaListenerService : NotificationListenerService() {
 
     companion object {
         private const val SESSION_RECONCILIATION_INTERVAL_MS = 2_000L
+        private const val PREFS_NAME = "auto_lyrics_prefs"
+        const val KEY_MONITORED = "monitored_packages"
+        const val KEY_SEEN = "seen_media_packages"
+    }
+
+    private val prefs: SharedPreferences by lazy {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+    }
+
+    /** Empty means no whitelist: every app's session is followed. */
+    private var monitored: Set<String> = emptySet()
+
+    private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == KEY_MONITORED) {
+            monitored = readMonitored()
+            // Apply a whitelist change mid-playback without waiting for the
+            // reconciliation tick.
+            updateSessions()
+        }
     }
 
     private val sessionsListener =
@@ -51,12 +74,15 @@ class MediaListenerService : NotificationListenerService() {
     override fun onCreate() {
         super.onCreate()
         sessionManager = getSystemService(MEDIA_SESSION_SERVICE) as MediaSessionManager
+        monitored = readMonitored()
+        prefs.registerOnSharedPreferenceChangeListener(prefsListener)
         LyricsDemandController.addListener(lyricsDemandListener)
         if (LyricsDemandController.isActive) startSessionReconciliation()
     }
 
     override fun onDestroy() {
         reconciliationHandler.removeCallbacks(reconciliationRunnable)
+        prefs.unregisterOnSharedPreferenceChangeListener(prefsListener)
         LyricsDemandController.removeListener(lyricsDemandListener)
         super.onDestroy()
     }
@@ -99,8 +125,21 @@ class MediaListenerService : NotificationListenerService() {
         reconciliationHandler.postDelayed(reconciliationRunnable, SESSION_RECONCILIATION_INTERVAL_MS)
     }
 
+    private fun readMonitored(): Set<String> =
+        prefs.getStringSet(KEY_MONITORED, null)?.toSet() ?: emptySet()
+
+    /** Remembers every package that ever showed a media session for the picker dialog. */
+    private fun recordSeen(controllers: List<MediaController>?) {
+        val pkgs = controllers?.map { it.packageName }?.filter { it != packageName }?.toSet()
+        if (pkgs.isNullOrEmpty()) return
+        val current = prefs.getStringSet(KEY_SEEN, null)?.toSet() ?: emptySet()
+        val merged = current + pkgs
+        if (merged != current) prefs.edit().putStringSet(KEY_SEEN, merged).apply()
+    }
+
     private fun pickBestSession(controllers: List<MediaController>?) {
-        val filtered = controllers?.filter { it.packageName != packageName }
+        recordSeen(controllers)
+        val filtered = controllers?.filter { sessionAllowed(it.packageName, packageName, monitored) }
         if (filtered.isNullOrEmpty()) {
             selectedSessionToken = null
             if (LyricsDemandController.isActive) {

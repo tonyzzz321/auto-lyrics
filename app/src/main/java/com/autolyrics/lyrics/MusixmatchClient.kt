@@ -3,6 +3,7 @@ package com.autolyrics.lyrics
 import android.content.SharedPreferences
 import android.util.Log
 import com.autolyrics.BuildConfig
+import com.autolyrics.util.LyricDisplay
 import com.autolyrics.media.SpotifyTrackIdentity
 import com.autolyrics.model.LyricLine
 import com.autolyrics.model.LyricWord
@@ -97,11 +98,12 @@ object MusixmatchClient {
 
     fun getLyrics(
         track: TrackInfo,
-        prefs: SharedPreferences? = null
+        prefs: SharedPreferences? = null,
+        transport: MutableList<String>? = null
     ): MusixmatchResult? {
         if (track.title.isBlank()) return null
 
-        val macro = fetchMacro(track, prefs) ?: return null
+        val macro = fetchMacro(track, prefs, transport) ?: return null
         val match = parseMacroResponse(macro.toString()) ?: return null
         val candidate = match.candidate
         val requestedSpotifyTrackId = SpotifyTrackIdentity.trackId(track)
@@ -139,7 +141,7 @@ object MusixmatchClient {
                 debugLog("using RichSync embedded in mobile macro response")
                 inlineRichSync
             } else if (candidate.commonTrackId != null) {
-                fetchRichSync(candidate, prefs)
+                fetchRichSync(candidate, prefs, transport)
             } else {
                 emptyList()
             }
@@ -207,7 +209,8 @@ object MusixmatchClient {
 
     private fun fetchMacro(
         track: TrackInfo,
-        prefs: SharedPreferences?
+        prefs: SharedPreferences?,
+        transport: MutableList<String>? = null
     ): JsonObject? {
         val params = buildMacroParams(track)
 
@@ -217,18 +220,20 @@ object MusixmatchClient {
                 "spotify_id='${params["track_spotify_id"].orEmpty()}'"
         )
 
-        return authenticatedRequest("macro.subtitles.get", params, prefs)
+        return authenticatedRequest("macro.subtitles.get", params, prefs, transport)
     }
 
     private fun fetchRichSync(
         candidate: TrackCandidate,
-        prefs: SharedPreferences?
+        prefs: SharedPreferences?,
+        transport: MutableList<String>? = null
     ): List<LyricLine> {
         val commonTrackId = candidate.commonTrackId ?: return emptyList()
         val response = authenticatedRequest(
             endpoint = "track.richsync.get",
             params = linkedMapOf("commontrack_id" to commonTrackId.toString()),
-            prefs = prefs
+            prefs = prefs,
+            transport = transport
         ) ?: return emptyList()
 
         return parseRichSyncResponse(response.toString())
@@ -376,8 +381,10 @@ object MusixmatchClient {
         )
             ?.let { deepFind(it, "lyrics_body")?.asStringOrNull() }
             .orEmpty()
-        val plainLines = cleanPlainBody(plainBody)
-            .map { text -> LyricLine(0L, LrcParser.cleanSpacing(text)) }
+        val plainLines = LyricDisplay.stripNonLyric(
+            cleanPlainBody(plainBody)
+                .map { text -> LyricLine(0L, LrcParser.cleanSpacing(text)) }
+        )
         if (plainLines.isNotEmpty()) {
             return ManualFetched(
                 lines = plainLines,
@@ -414,21 +421,24 @@ object MusixmatchClient {
     private fun authenticatedRequest(
         endpoint: String,
         params: LinkedHashMap<String, String>,
-        prefs: SharedPreferences?
+        prefs: SharedPreferences?,
+        transport: MutableList<String>? = null
     ): JsonObject? {
-        var token = getToken(prefs, force = false) ?: return null
+        var token = getToken(prefs, force = false, transport = transport) ?: return null
         var response = request(
             endpoint = endpoint,
-            params = LinkedHashMap(params).apply { put("usertoken", token) }
+            params = LinkedHashMap(params).apply { put("usertoken", token) },
+            transport = transport
         )
 
         if (response.httpCode == 401 || apiStatus(response.json) == 401) {
             debugLog("mobile $endpoint token rejected; refreshing once")
             invalidateToken(prefs)
-            token = getToken(prefs, force = true) ?: return null
+            token = getToken(prefs, force = true, transport = transport) ?: return null
             response = request(
                 endpoint = endpoint,
-                params = LinkedHashMap(params).apply { put("usertoken", token) }
+                params = LinkedHashMap(params).apply { put("usertoken", token) },
+                transport = transport
             )
         }
 
@@ -437,7 +447,8 @@ object MusixmatchClient {
 
     private fun getToken(
         prefs: SharedPreferences?,
-        force: Boolean
+        force: Boolean,
+        transport: MutableList<String>? = null
     ): String? {
         synchronized(tokenLock) {
             val now = System.currentTimeMillis()
@@ -460,7 +471,8 @@ object MusixmatchClient {
             debugLog(if (force) "mobile token.get refresh" else "mobile token.get")
             val response = request(
                 endpoint = "token.get",
-                params = linkedMapOf("user_language" to "en")
+                params = linkedMapOf("user_language" to "en"),
+                transport = transport
             )
             val token = parseTokenResponse(response.json?.toString().orEmpty())
             if (!token.isNullOrBlank()) {
@@ -489,7 +501,8 @@ object MusixmatchClient {
 
     private fun request(
         endpoint: String,
-        params: LinkedHashMap<String, String>
+        params: LinkedHashMap<String, String>,
+        transport: MutableList<String>? = null
     ): HttpJsonResponse {
         val url = buildUrl(endpoint, params)
         val request = Request.Builder()
@@ -508,9 +521,16 @@ object MusixmatchClient {
                 debugLog(
                     "mobile ${response.code} api=${apiStatus(json) ?: "-"} $endpoint"
                 )
+                if (response.code != 200) transport?.add("HTTP ${response.code}")
+                val api = apiStatus(json)
+                // Musixmatch answers 8xxxxxx for genuine misses ("no such
+                // track"); anything else non-200 (captcha 451, 401 token,
+                // 5xxxxxx server) is a transient death of this leg.
+                if (api != null && api != 200 && api < 800000) transport?.add("api $api")
                 HttpJsonResponse(response.code, json)
             }
         } catch (e: Exception) {
+            transport?.add("network: ${e.javaClass.simpleName}")
             debugLog("mobile $endpoint failed: ${e.javaClass.simpleName}: ${e.message.orEmpty()}")
             HttpJsonResponse(-1, null)
         }
@@ -648,7 +668,7 @@ object MusixmatchClient {
                     )
                 )
             }
-            repaired
+            LyricDisplay.stripNonLyric(repaired)
         } catch (_: Exception) {
             emptyList()
         }

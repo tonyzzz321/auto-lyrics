@@ -2,6 +2,7 @@ package com.autolyrics.lyrics
 
 import android.util.Log
 import com.autolyrics.BuildConfig
+import com.autolyrics.util.LyricDisplay
 import com.autolyrics.model.LyricLine
 import com.autolyrics.model.LyricWord
 import com.autolyrics.model.LyricsStatus
@@ -77,7 +78,8 @@ object PetitLyricsClient {
     fun getSyncedLyrics(
         album: String,
         artist: String,
-        title: String
+        title: String,
+        transport: MutableList<String>? = null
     ): PetitLyricsResult? {
         if (!isConfigured) {
             debugLog("provider skipped: configuration is incomplete")
@@ -124,7 +126,7 @@ object PetitLyricsClient {
                         .joinToString("|")
                 if (!attempted.add(candidateKey)) continue
 
-                val result = decodeCandidate(candidate)
+                val result = decodeCandidate(candidate, transport)
                 if (result != null) {
                     debugLog(
                         "accepted lyricsType=${result.lyricsType}, lines=${result.lines.size}, " +
@@ -140,7 +142,10 @@ object PetitLyricsClient {
         return null
     }
 
-    private fun decodeCandidate(candidate: PetitLyricsCandidate): PetitLyricsResult? {
+    private fun decodeCandidate(
+        candidate: PetitLyricsCandidate,
+        transport: MutableList<String>? = null
+    ): PetitLyricsResult? {
         return when (candidate.lyricsType) {
             3 -> {
                 val decoded = decodeBase64(candidate.lyricsData) ?: return null
@@ -152,7 +157,7 @@ object PetitLyricsClient {
             }
 
             2 -> {
-                val plainCandidate = fetchPlainLyricsFor(candidate) ?: return null
+                val plainCandidate = fetchPlainLyricsFor(candidate, transport) ?: return null
                 val lines = decodeLineSyncPayload(
                     lineSyncBase64 = candidate.lyricsData,
                     plainTextBase64 = plainCandidate.lyricsData
@@ -183,9 +188,12 @@ object PetitLyricsClient {
         )
     }
 
-    private fun fetchPlainLyricsFor(candidate: PetitLyricsCandidate): PetitLyricsCandidate? {
+    private fun fetchPlainLyricsFor(
+        candidate: PetitLyricsCandidate,
+        transport: MutableList<String>? = null
+    ): PetitLyricsCandidate? {
         candidate.lyricsId?.takeIf { it.isNotBlank() }?.let { lyricsId ->
-            val byId = requestCandidatesById(lyricsId, lyricsType = 1)
+            val byId = requestCandidatesById(lyricsId, lyricsType = 1, transport = transport)
             selectPlainCompanion(candidate, byId)?.let {
                 debugLog("line-sync companion text resolved by lyricsId=$lyricsId")
                 return it
@@ -201,7 +209,8 @@ object PetitLyricsClient {
             album = candidate.album,
             lyricsType = 1,
             maxCount = 3,
-            logLabel = "line-sync-text"
+            logLabel = "line-sync-text",
+            transport = transport
         )
 
         return selectPlainCompanion(candidate, byMetadata)
@@ -293,7 +302,8 @@ object PetitLyricsClient {
         album: String,
         lyricsType: Int,
         maxCount: Int,
-        logLabel: String
+        logLabel: String,
+        transport: MutableList<String>? = null
     ): List<PetitLyricsCandidate> {
         val body = newRequestBody(lyricsType, maxCount).apply {
             add("key_title", title)
@@ -301,19 +311,20 @@ object PetitLyricsClient {
             if (album.isNotBlank()) add("key_album", album)
         }.build()
 
-        val xml = executeRequest(body, logLabel) ?: return emptyList()
+        val xml = executeRequest(body, logLabel, transport) ?: return emptyList()
         return parseCandidates(xml)
     }
 
     private fun requestCandidatesById(
         lyricsId: String,
-        lyricsType: Int
+        lyricsType: Int,
+        transport: MutableList<String>? = null
     ): List<PetitLyricsCandidate> {
         val body = newRequestBody(lyricsType, 1).apply {
             add("key_lyricsId", lyricsId)
         }.build()
 
-        val xml = executeRequest(body, "lyricsId") ?: return emptyList()
+        val xml = executeRequest(body, "lyricsId", transport) ?: return emptyList()
         return parseCandidates(xml)
     }
 
@@ -333,7 +344,11 @@ object PetitLyricsClient {
             .add("terminalType", "0")
     }
 
-    private fun executeRequest(body: FormBody, label: String): String? {
+    private fun executeRequest(
+        body: FormBody,
+        label: String,
+        transport: MutableList<String>? = null
+    ): String? {
         val request = Request.Builder()
             .url(ENDPOINT)
             .post(body)
@@ -350,6 +365,7 @@ object PetitLyricsClient {
                         "query=$label"
                 )
                 if (!response.isSuccessful) {
+                    transport?.add("HTTP ${response.code}")
                     debugLog("request rejected by HTTP layer: $label")
                     return@use null
                 }
@@ -362,12 +378,14 @@ object PetitLyricsClient {
 
                 val parseError = xmlParseError(xml)
                 if (parseError != null) {
+                    transport?.add("parse: xml")
                     debugLog("outer XML parse error: $parseError")
                     return@use null
                 }
                 xml
             }
         } catch (e: Exception) {
+            transport?.add("network: ${e.javaClass.simpleName}")
             debugLog("request failed: ${e.javaClass.simpleName}: ${e.message.orEmpty()}; query=$label")
             null
         }
@@ -520,8 +538,9 @@ object PetitLyricsClient {
             )
         }
 
-        return lines
-            .sortedBy { it.timeMs }
+        return LyricDisplay.stripNonLyric(
+            lines.sortedBy { it.timeMs }
+        )
             .distinctBy { it.timeMs to it.text }
     }
 
@@ -568,8 +587,9 @@ object PetitLyricsClient {
             )
         }
 
-        return lines
-            .filter { it.timeMs >= 0L }
+        return LyricDisplay.stripNonLyric(
+            lines.filter { it.timeMs >= 0L }
+        )
             .distinctBy { it.timeMs to it.text }
     }
 

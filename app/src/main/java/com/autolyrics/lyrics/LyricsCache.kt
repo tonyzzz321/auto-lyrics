@@ -5,6 +5,7 @@ import com.autolyrics.media.SpotifyTrackIdentity
 import com.autolyrics.model.LyricLine
 import com.autolyrics.model.LyricWord
 import com.autolyrics.model.LyricsStatus
+import com.autolyrics.util.LyricDisplay
 import com.autolyrics.model.TrackInfo
 import com.google.gson.Gson
 import java.io.File
@@ -107,7 +108,10 @@ class LyricsCache(context: Context) {
             }
             // Legacy entries stored Enhanced-LRC word tags as literal text;
             // re-tokenize them so display and labels self-heal on read.
-            val healed = lines.map(LrcParser::repairWordTags)
+            // Providers used to ship instrumental tags and section headers
+            // as payload lines; the ingest filter is idempotent, so re-
+            // applying it here cleans entries cached before it existed.
+            val healed = LyricDisplay.stripNonLyric(lines.map(LrcParser::repairWordTags))
             Triple(healed, status, sanitizeSource(cached.source, healed))
         } catch (_: Exception) {
             file.delete()

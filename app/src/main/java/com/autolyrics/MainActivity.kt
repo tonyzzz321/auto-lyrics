@@ -42,6 +42,7 @@ import com.autolyrics.model.LyricsStatus
 import com.autolyrics.ui.KaraokeSweepSpan
 import com.autolyrics.ui.PhoneKaraokeSweep
 import com.autolyrics.util.LyricDisplay
+import com.autolyrics.util.SungLine
 import com.autolyrics.util.SyncCalibration
 import com.google.android.material.snackbar.Snackbar
 import kotlinx.coroutines.launch
@@ -197,6 +198,11 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btn_manual_search).setOnClickListener {
             ManualSearchDialog.show(this)
         }
+
+        findViewById<View>(R.id.row_media_apps).setOnClickListener {
+            MediaAppsDialog.show(this) { updateMediaAppsDisplay() }
+        }
+        updateMediaAppsDisplay()
 
         findViewById<Button>(R.id.btn_font_size_minus).setOnClickListener {
             if (lyricsFontSizeSp > 12) {
@@ -391,7 +397,6 @@ class MainActivity : AppCompatActivity() {
                                 sb.append(LyricDisplay.displayText(line.text).toString() + "\n")
                                 if (hasTrans) {
                                     val tl = state.translatedLines?.getOrNull(i)?.takeIf { it.isNotBlank() }
-                                        ?: LyricDisplay.MUSIC_SYMBOL.takeIf { LyricDisplay.isSymbolText(line.text) }
                                     if (!tl.isNullOrBlank()) {
                                         val tlStart = sb.length
                                         sb.append("$tl\n")
@@ -514,6 +519,26 @@ class MainActivity : AppCompatActivity() {
         updateKaraokeEdgeDisplay()
     }
 
+    /** Summarizes the media-source whitelist on the Media source section row. */
+    private fun updateMediaAppsDisplay() {
+        val monitored = prefs.getStringSet(MediaListenerService.KEY_MONITORED, null)?.toSet()
+            ?: emptySet()
+        val tv = findViewById<TextView>(R.id.tv_media_apps_value)
+        // Read the pref straight back: what the dialog checked is what the
+        // row shows. Re-probing package visibility here would put a second,
+        // independently flaky source of truth behind the row (it once showed
+        // "No installed apps" while the dialog had Symfonium checked).
+        tv.text = when {
+            monitored.isEmpty() -> "All apps"
+            monitored.size == 1 -> mediaAppLabel(monitored.first())
+            else -> "${monitored.size} apps"
+        }
+    }
+
+    private fun mediaAppLabel(pkg: String): String = runCatching {
+        packageManager.getApplicationInfo(pkg, 0).loadLabel(packageManager).toString()
+    }.getOrDefault(pkg)
+
     private fun updateKaraokeEdgeDisplay() {
         val edge = com.autolyrics.auto.AaHost.edge(prefs)
         findViewById<TextView>(R.id.tv_karaoke_edge).text = if (edge > 0) "+$edge" else "$edge"
@@ -612,10 +637,18 @@ class MainActivity : AppCompatActivity() {
         val dimColor = colors?.textDim ?: DEFAULT_DIM
         val positionMs = safeCurrentPositionMs()
 
-        state.lines.forEachIndexed { i, line ->
-            val isPastLine = state.currentIndex >= 0 && i < state.currentIndex
-            val isCurrentLine = i == state.currentIndex
-            val isFutureLine = state.currentIndex < 0 || i > state.currentIndex
+        // Display sequence: real lines interleaved with instrumental marker
+        // rows (intro/interlude), same model as the Android Auto surfaces.
+        // On the phone markers are STATIC triples - the countdown digits
+        // are an Android Auto affordance only - and they highlight, page and
+        // scroll exactly like lyric rows.
+        val rows = SungLine.virtualRows(state.lines, state.lines.size)
+        val curV = SungLine.currentVIndex(rows, state.lines, positionMs)
+        rows.forEachIndexed { v, row ->
+            val line = if (row.isGap) null else state.lines[row.realIndex]
+            val isPastLine = curV >= 0 && v < curV
+            val isCurrentLine = v == curV
+            val isFutureLine = curV < 0 || v > curV
             val lineStart = ssb.length
 
             if (isCurrentLine) {
@@ -625,7 +658,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             val lyricStart = ssb.length
-            ssb.append(LyricDisplay.displayText(line.text))
+            ssb.append(line?.let { LyricDisplay.displayText(it.text) } ?: LyricDisplay.MUSIC_SYMBOL)
             val lyricEnd = ssb.length
 
             if (isPastLine) {
@@ -641,7 +674,7 @@ class MainActivity : AppCompatActivity() {
                     Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
                 )
 
-                if (line.words.isEmpty()) {
+                if (line == null || line.words.isEmpty()) {
                     ssb.setSpan(
                         ForegroundColorSpan(highlightColor),
                         lyricStart, lyricEnd,
@@ -695,10 +728,11 @@ class MainActivity : AppCompatActivity() {
                 )
             }
 
-            val translatedLine = state.translatedLines?.getOrNull(i)?.takeIf { it.isNotBlank() }
-                ?: LyricDisplay.MUSIC_SYMBOL.takeIf {
-                    LyricDisplay.isSymbolText(line.text) && state.translatedLines?.isNotEmpty() == true
-                }
+            // Only real lines have translations; a marker row never looks
+            // up (or displays) a translated line.
+            val translatedLine = line?.let {
+                state.translatedLines?.getOrNull(row.realIndex)?.takeIf { t -> t.isNotBlank() }
+            }
             if (!translatedLine.isNullOrBlank()) {
                 ssb.append("\n")
                 val tlStart = ssb.length
@@ -720,10 +754,10 @@ class MainActivity : AppCompatActivity() {
 
         tvLyrics.text = ssb
 
-        if (state.currentIndex != lastScrolledIndex && state.currentIndex >= 0) {
-            lastScrolledIndex = state.currentIndex
+        if (curV != lastScrolledIndex && curV >= 0) {
+            lastScrolledIndex = curV
             if (!userScrolling) {
-                autoScrollToCurrentLine(state.currentIndex, state.lines.size)
+                autoScrollToCurrentLine(curV, rows.size)
             }
         }
     }
@@ -832,9 +866,11 @@ class MainActivity : AppCompatActivity() {
             btnJumpToCurrent.visibility = View.GONE
             handler.removeCallbacks(scrollResetRunnable)
             val state = mediaTracker.state.value
-            if (state.currentIndex >= 0) {
-                lastScrolledIndex = state.currentIndex
-                autoScrollToCurrentLine(state.currentIndex, state.lines.size)
+            val rows = SungLine.virtualRows(state.lines, state.lines.size)
+            val curV = SungLine.currentVIndex(rows, state.lines, safeCurrentPositionMs())
+            if (curV >= 0) {
+                lastScrolledIndex = curV
+                autoScrollToCurrentLine(curV, rows.size)
             }
         }
     }

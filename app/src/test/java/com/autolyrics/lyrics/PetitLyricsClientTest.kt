@@ -86,7 +86,7 @@ class PetitLyricsClientTest {
     }
 
     @Test
-    fun blankLineIsPreservedAsMusicMarkerWithoutInvisibleWord() {
+    fun blankWordSyncLineIsStrippedAtIngest() {
         val payload = """
             <wsy>
               <line>
@@ -102,10 +102,9 @@ class PetitLyricsClientTest {
 
         val lines = PetitLyricsClient.parseWordSyncPayload(payload)
 
-        assertEquals(1, lines.size)
-        assertEquals(5000L, lines[0].timeMs)
-        assertEquals("♪", lines[0].text)
-        assertTrue(lines[0].words.isEmpty())
+        // Non-lyric lines (blank = instrumental marker) are stripped at
+        // ingest; the instrumental stretch is derived from timing silence.
+        assertEquals(0, lines.size)
     }
 
     @Test

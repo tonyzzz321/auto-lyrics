@@ -8,7 +8,7 @@ Auto Lyrics is an Android app that follows the active media session and displays
 - **Lyrics / Sync / More browse tabs** — lyrics are the primary view, timing adjustment is kept separate, and detailed track/provider information lives under More.
 - **Fixed 5-row lyric window** — the Lyrics tab reads forward from the pinned current line with a translation line stacked under each lyric line; near the song end it simply shows fewer rows. Not-synced lyrics instead list the whole song once as a static, touch-scrollable sheet.
 - **Per-lyrics sync** — the fine-offset presets and **Tap to Sync** under the lyrics tune the LOADED LYRICS (stored against the exact timing set, not the song or the provider): replay the same lyrics and the value rides along, get different timing and it starts fresh at zero.
-- **Fixed 3-row Sync preview** — current line plus surrounding context while adjusting the per-lyrics offset on the head unit.
+- **Fixed 3-row Sync preview** — the current line pinned first, reading forward, while adjusting the per-lyrics offset on the head unit.
 - **Now-playing lyric line** — the Android Auto now-playing card carries the current lyric line and falls back to a plain title/artist player card during intro, instrumentals, outro, and lyric failures — with a 4→1 music-glyph countdown into each coming lyric during the final seconds of any gap.
 - **Multi-provider resolution** — LRCLIB, Musixmatch, configured PetitLyrics, and SyncLRC candidates are compared using metadata match, lyric quality, and source confidence.
 - **Karaoke-aware selection** — normal mode remains accuracy-first; Karaoke mode may prefer a real WORD_SYNC candidate when its recording match and payload quality are near-equivalent to the normal winner.
@@ -146,14 +146,14 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for provider details and [RELEASE.md](RELEA
 The primary browse tab. It shows the track header plus a moving lyric window:
 
 ```text
-   previous line
-   previous line
 ▶  current line
+   next line
+   next line
    next line
    next line
 ```
 
-The current line is pinned to the first row (near the song end the list simply shows fewer rows), every row's translated line starts at the same x as its lyric line, and instrumental stretches — intro included — render as a **countdown row**: one `♪` glyph per remaining second until the next lyric (max four). Instrumentals are derived from the timing gap, not from tags: non-lyric lines (`♪` runs, `[Music]`/`[Verse]`-style tags, section headers, timed production credits like `词：林夕`/`Lyrics by …`) are stripped when lyrics are downloaded, so they never render anywhere. When the loaded lyrics carry no timing at all (plain text), the tab instead lists the **whole song once** as a static sheet — no `▶`, no window sliding, no per-second refresh — so a touch-scroll is never yanked back to the top.
+The current line is pinned to the **first row** and the window reads forward — previous lines never appear on the tab (near the song end the list simply shows fewer rows), every row's translated line starts at the same x as its lyric line, and instrumental stretches — intro included — render as a **countdown row**: one `♪` glyph per remaining second until the next lyric (max four). Instrumentals are derived from the timing gap, not from tags: non-lyric lines (`♪` runs, `[Music]`/`[Verse]`-style tags, section headers, timed production credits like `词：林夕`/`Lyrics by …`) are stripped when lyrics are downloaded, so they never render anywhere. When the loaded lyrics carry no timing at all (plain text), the tab instead lists the **whole song once** as a static sheet — no `▶`, no window sliding, no per-second refresh — so a touch-scroll is never yanked back to the top.
 
 ### Karaoke
 

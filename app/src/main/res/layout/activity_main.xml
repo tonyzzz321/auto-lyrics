@@ -656,6 +656,79 @@
                 android:alpha="0.35"
                 style="?attr/materialButtonOutlinedStyle" />
         </LinearLayout>
+
+        <!-- Karaoke edge calibration row -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="6dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Karaoke edge"
+                android:textColor="#CCCCDD"
+                android:textSize="13sp" />
+
+            <com.autolyrics.ui.SettingInfoView
+                android:id="@+id/info_karaoke_edge"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:text="ⓘ"
+                android:textColor="#777792"
+                android:textSize="12sp"
+                android:gravity="center"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Moves the right edge of the Android Auto Karaoke board by one character per tap. Watch the head unit while adjusting; the board column auto-sizes per car and this nudges it." />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <Button
+                android:id="@+id/btn_karaoke_edge_minus"
+                android:layout_width="40dp"
+                android:layout_height="34dp"
+                android:text="◀"
+                android:textSize="12sp"
+                android:textColor="#CCCCDD"
+                android:backgroundTint="#2A2A3E"
+                android:contentDescription="Move the Android Auto Karaoke board right edge one character left"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:textAllCaps="false"
+                android:minWidth="0dp"
+                android:padding="0dp"
+                style="?attr/materialButtonOutlinedStyle" />
+
+            <TextView
+                android:id="@+id/tv_karaoke_edge"
+                android:layout_width="44dp"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:text="+0"
+                android:textColor="#CCCCDD"
+                android:textSize="13sp" />
+
+            <Button
+                android:id="@+id/btn_karaoke_edge_plus"
+                android:layout_width="40dp"
+                android:layout_height="34dp"
+                android:text="▶"
+                android:textSize="12sp"
+                android:textColor="#CCCCDD"
+                android:backgroundTint="#2A2A3E"
+                android:contentDescription="Move the Android Auto Karaoke board right edge one character right"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:textAllCaps="false"
+                android:minWidth="0dp"
+                android:padding="0dp"
+                style="?attr/materialButtonOutlinedStyle" />
+        </LinearLayout>
     </LinearLayout>
 
     <View

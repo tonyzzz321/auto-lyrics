@@ -131,10 +131,6 @@ class LyricsCache(context: Context) {
         }
         val key = keyParts.joinToString("|")
 
-        if (com.autolyrics.BuildConfig.DEBUG) {
-            android.util.Log.d("LyricsCache", "key=$key")
-        }
-
         val hash = key.hashCode().toUInt().toString(16)
         return File(cacheDir, "$hash.json")
     }

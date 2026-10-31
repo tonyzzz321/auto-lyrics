@@ -33,6 +33,7 @@ import androidx.core.widget.TextViewCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import com.autolyrics.auto.LyricsBrowserService
 import com.autolyrics.media.MediaListenerService
 import com.autolyrics.media.MediaTracker
 import com.autolyrics.model.AlbumColors
@@ -257,6 +258,14 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btn_aa_delay_plus).setOnClickListener {
             adjustAaOffset(AA_SYNC_STEP_MS)
         }
+
+        updateKaraokeEdgeDisplay()
+        findViewById<Button>(R.id.btn_karaoke_edge_minus).setOnClickListener {
+            adjustKaraokeEdge(-1)
+        }
+        findViewById<Button>(R.id.btn_karaoke_edge_plus).setOnClickListener {
+            adjustKaraokeEdge(1)
+        }
         btnAaDelayReset.setOnClickListener {
             val previousOffset = aaOffsetMs
             if (previousOffset == 0L) return@setOnClickListener
@@ -450,6 +459,19 @@ class MainActivity : AppCompatActivity() {
     private fun adjustPhoneOffset(deltaMs: Long) {
         dismissUndoSnackbar()
         mediaTracker.adjustOffset(deltaMs)
+    }
+
+    private fun adjustKaraokeEdge(delta: Int) {
+        val current = prefs.getInt(LyricsBrowserService.KARAOKE_EDGE_PREF_KEY, 0)
+        val updated = (current + delta).coerceIn(-8, 8)
+        if (updated == current) return
+        prefs.edit().putInt(LyricsBrowserService.KARAOKE_EDGE_PREF_KEY, updated).apply()
+        updateKaraokeEdgeDisplay()
+    }
+
+    private fun updateKaraokeEdgeDisplay() {
+        val edge = prefs.getInt(LyricsBrowserService.KARAOKE_EDGE_PREF_KEY, 0)
+        findViewById<TextView>(R.id.tv_karaoke_edge).text = if (edge > 0) "+$edge" else "$edge"
     }
 
     private fun adjustAaOffset(deltaMs: Long) {

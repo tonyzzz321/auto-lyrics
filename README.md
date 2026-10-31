@@ -150,11 +150,15 @@ The primary browse tab. It shows the track header plus a moving lyric window:
    next line
 ```
 
-The non-current rows reserve a visual gutter so their lyric text aligns with the current row. When translations are present, the main window is reduced to 3 rows to avoid overcrowding.
+The current line is pinned to the first row (near the song end the list simply shows fewer rows), every row's translated line starts at the same x as its lyric line, and an instrumental intro renders as `♪`. When translations are present, the main window is reduced to 3 rows to avoid overcrowding.
+
+### Karaoke
+
+A Chinese-KTV-style two-row board for line-timed lyrics, under the same song-info header as the Lyrics tab: the line being sung (marked with a triangle) sits on one row while its partner previews on the other — top rows left-justified, bottom rows right-justified (emulated with width-modelled padding auto-sized from the head unit's own icon-size hint, fine-tunable per car from the phone's Karaoke edge setting). Each side advances two lines when its own line finishes, translations ride directly under their lyric line, blank lines and instrumental intros show `♪`, and rows seek on click. Non-line-timed lyrics fall back to the Lyrics tab's layout.
 
 ### Sync
 
-The secondary tab for Android Auto timing correction. It keeps a fixed 3-row lyric preview and provides `−50 ms` / `+50 ms` controls. This offset is Android-Auto-specific and is separate from the phone/global lyric offset.
+The secondary tab for Android Auto timing correction. It keeps a forward-reading 3-row lyric preview (line being sung first; `♪` during intros) and provides `−50 ms` / `+50 ms` controls. This offset is Android-Auto-specific and is separate from the phone/global lyric offset. With no lyrics found it shows only the offset row plus a "No lyrics found for this track" row.
 
 ### More
 

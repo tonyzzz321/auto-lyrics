@@ -52,7 +52,7 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
     private var lastAlbumArt: Bitmap? = null
 
     private var aaOffsetMs = 0L
-    private var karaokeEdge = 0
+    private var carIconSizePx = -1
 
     // Minimum display time for changing chunks on the compact now-playing card.
     private val titleChunkHold = ChunkHold(MIN_CHUNK_DISPLAY_MS)
@@ -65,10 +65,6 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
                     aaOffsetMs = sp.getLong(key, 0L)
                     forceRefresh()
                 }
-                "aa_karaoke_edge" -> {
-                    karaokeEdge = sp.getInt(key, 0)
-                    forceRefresh()
-                }
                 TranslationLanguages.TARGET_LANGUAGE_PREF_KEY,
                 "translation_enabled",
                 "aa_karaoke_enabled" -> {
@@ -78,6 +74,10 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         }
 
     companion object {
+        /** Per-car nudge (in characters) added to the hint-derived karaoke
+         *  column; written by the phone settings SYNC section. */
+        internal const val KARAOKE_EDGE_PREF_KEY = "aa_karaoke_edge"
+
         private const val ROOT_ID = "root"
         private const val LYRICS_MENU_ID = "lyrics_menu"
         private const val KARAOKE_MENU_ID = "karaoke_menu"
@@ -85,19 +85,27 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         private const val MORE_MENU_ID = "more_menu"
         private const val SYNC_MINUS_ID = "sync_minus"
         private const val SYNC_PLUS_ID = "sync_plus"
-        private const val KARAOKE_EDGE_MINUS_ID = "karaoke_edge_minus"
-        private const val KARAOKE_EDGE_PLUS_ID = "karaoke_edge_plus"
-        private const val KARAOKE_EDGE_STEP = 2
         private const val SYNC_STEP_MS = 50L
         private const val SYNC_WINDOW_SIZE = 3
         private const val DEFAULT_WINDOW_SIZE = 5
-        private const val CURRENT_LINE_PREFIX = "▶  "
-        // Em + en spacing approximates the rendered width of the current-line marker
-        // so lyric text starts at the same x-position on surrounding rows.
-        private const val IDLE_LINE_PREFIX = "\u2003\u2002"
-        // Browse subtitles render smaller than titles; em + en + three-per-em spacing
-        // gives an effective indent of about 1.8em without changing Now Playing.
-        private const val TRANSLATION_SUBTITLE_PREFIX = "\u2003\u2002\u2004"
+        // Host rule learned from live rows: title lines drop the U+2000-family
+        // spaces but keep ideographic spaces, so leads and padding are built
+        // from \u3000 (1.0 em) and the marker from \u25b6 + an ASCII space
+        // (~1.06 em) — text starts at one position with or without the marker.
+        // Title text must start at one x in both states AND meet the
+        // subtitle's text (native indent ~37 px on DHU, which swallows all
+        // leading whitespace). The ▶ glyph is ~45 px, so the subtitle is
+        // pushed to it instead: no-break space is invisible but NOT
+        // Java-whitespace, halting the trim and rendering at full advance.
+        // Leads are pixel-tuned constants; retune from live screenshots.
+        private const val CURRENT_LINE_PREFIX = "\u25b6"
+        private const val IDLE_LINE_PREFIX = "\u200B\u00A0\u00A0\u00A0\u00A0"
+
+        // Subtitle fields strip NBSP (titles render it), but behind the
+        // ZWSP guard they DO keep ideographic and ASCII spaces: this run
+        // measures onto the bare-marker title text (~150 px on DHU) and the
+        // NBSP-guarded idle lead. Pixel-tuned; retune from live shots.
+        private const val TRANSLATION_SUBTITLE_PREFIX = "\u200B\u3000 "
         private const val PAD_WIDTH = 60
         // Default right-edge column for the Karaoke tab's right-justified row,
         // in display units (CJK = 2). Rows wrap (never shrink) past their
@@ -106,6 +114,9 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         // Sync tab's edge rows calibrate it per car. Padded width must stay
         // under the row's capacity or the row wraps to invisible space lines.
         private const val KARAOKE_COLUMN_DEFAULT = 42
+
+        /** Gearhead root hint: art icon px the host wants (viewport-scaled). */
+        private const val BROWSER_ICON_SIZE_HINT = "com.google.android.gms.car.media.BrowserIconSize"
         private const val NO_LYRICS_MESSAGE = "No lyrics found for this track"
         private const val TRANSLATION_LOADING_MESSAGE = "Loading translation…"
         private const val NOTIFY_THROTTLE_MS = 500L
@@ -134,7 +145,6 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
 
         val prefs = getSharedPreferences("auto_lyrics_prefs", MODE_PRIVATE)
         aaOffsetMs = prefs.getLong("aa_offset_ms", 0L)
-        karaokeEdge = prefs.getInt("aa_karaoke_edge", 0)
         prefs.registerOnSharedPreferenceChangeListener(prefsListener)
 
         mediaSession = MediaSessionCompat(this, "AutoLyrics").apply {
@@ -193,10 +203,21 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         clientUid: Int,
         rootHints: Bundle?
     ): BrowserRoot {
+        when (val hint = rootHints?.get(BROWSER_ICON_SIZE_HINT)) {
+            is Number -> hint.toInt()
+            else -> hint?.toString()?.trim()?.toIntOrNull()
+        }?.let { if (it > 0) carIconSizePx = it }
         return BrowserRoot(ROOT_ID, null)
     }
 
     override fun onLoadChildren(
+        parentId: String,
+        result: Result<MutableList<MediaBrowserCompat.MediaItem>>
+    ) {
+        buildChildren(parentId, result)
+    }
+
+    private fun buildChildren(
         parentId: String,
         result: Result<MutableList<MediaBrowserCompat.MediaItem>>
     ) {
@@ -217,7 +238,7 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
             KARAOKE_MENU_ID -> buildKaraokeMenu(state, items)
             SYNC_MENU_ID -> buildSyncMenu(state, items)
             MORE_MENU_ID -> buildMoreMenu(state, items)
-            SYNC_MINUS_ID, SYNC_PLUS_ID, KARAOKE_EDGE_MINUS_ID, KARAOKE_EDGE_PLUS_ID -> Unit
+            SYNC_MINUS_ID, SYNC_PLUS_ID -> Unit
         }
 
         result.sendResult(items)
@@ -266,7 +287,11 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
                     val adjStart = stableWindowStart(estimatedIdx, state.lines.size)
                     val winEnd = minOf(state.lines.size, adjStart + windowSize)
 
+                    var prevBlank = false
                     for (i in adjStart until winEnd) {
+                        val blank = state.lines[i].text.isBlank()
+                        if (blank && prevBlank && i != estimatedIdx) continue
+                        prevBlank = blank
                         val text = state.lines[i].text.ifBlank { "♪" }
                         val prefix = linePrefix(i == estimatedIdx)
                         val trans = state.translatedLines?.getOrNull(i)?.takeIf { it.isNotBlank() }
@@ -293,10 +318,11 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
             buildLyricsMenu(state, items)
             return
         }
+        addTrackHeader(state, items)
         val column = karaokeColumn()
 
         val posMs = getAaPositionMs()
-        val idx = findLineIndex(state.lines, posMs).coerceAtLeast(0)
+        val idx = findLineIndex(state.lines, posMs)
         val (topIdx, bottomIdx) = AaKaraokeRows.pairFor(idx, state.lines.size)
         val topActive = topIdx == idx
         val bottomActive = bottomIdx == idx
@@ -306,13 +332,33 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         val topText = topLine?.text?.ifBlank { "\u266A" } ?: "\u266A"
         val bottomText = bottomLine?.text?.ifBlank { "\u266A" } ?: "\u266A"
 
+        val translationActive = state.translatedLines?.isNotEmpty() == true
+        val topTranslation = topLine?.let {
+            state.translatedLines?.getOrNull(topIdx)?.takeIf { t -> t.isNotBlank() }
+        } ?: "♪".takeIf { topText == "♪" && translationActive }
+        val bottomTranslation = bottomLine?.let {
+            state.translatedLines?.getOrNull(bottomIdx)?.takeIf { t -> t.isNotBlank() }
+        }
+
+        // The host sizes title and subtitle glyphs independently per row
+        // (live hosts render the same design's subtitle at ~0.7x or ~1.0x of
+        // the title), so padding across the two fields can never hold an
+        // edge. One multi-line title shares a single font scale, making the
+        // padded tails of both lines land on the same edge by construction.
         val topMarker = if (topActive) CURRENT_LINE_PREFIX else IDLE_LINE_PREFIX
         val topId = if (topIdx >= 0) "line_$topIdx" else "karaoke_hold"
         items.add(
             buildTextItem(
                 topId,
-                "$topMarker$topText",
-                subtitle = topLine?.let { state.translatedLines?.getOrNull(topIdx)?.takeIf { t -> t.isNotBlank() } }
+                buildString {
+                    append(topMarker).append(topText)
+                    if (topTranslation != null) {
+                        // Byte-identical lead to the lyric line (marker
+                        // included), so both lines start at one edge with no
+                        // glyph-width modeling involved.
+                        append('\n').append(topMarker).append(topTranslation)
+                    }
+                }
             )
         )
 
@@ -323,27 +369,29 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
             CURRENT_LINE_PREFIX
         )
         val bottomId = if (bottomIdx >= 0) "line_$bottomIdx" else "karaoke_hold"
-        val bottomTranslation = bottomLine?.let {
-            state.translatedLines?.getOrNull(bottomIdx)?.takeIf { t -> t.isNotBlank() }
-        }
         items.add(
             buildTextItem(
                 bottomId,
-                AaKaraokeRows.rightAlign(bottomText, column, bottomMarker),
-                // Same column for the subtitle so its right edge holds with
-                // the lyric line above it (the invisible gutter buildTextItem
-                // prepends widens the string a little; the subtitle font is
-                // smaller, so the row still fits one line).
-                subtitle = bottomTranslation?.let {
-                    AaKaraokeRows.rightAlign(it, column)
+                buildString {
+                    append(AaKaraokeRows.rightAlign(bottomText, column, bottomMarker))
+                    if (bottomTranslation != null) {
+                        // Same marker string and the same over-estimated
+                        // marker allowance as the lyric line: the rendered ▶
+                        // advance cancels out of both tails equally, so they
+                        // land on one edge whatever it is.
+                        append('\n').append(AaKaraokeRows.rightAlign(bottomTranslation, column, bottomMarker))
+                    }
                 }
             )
         )
     }
 
-    /** Right-edge column of the Karaoke board after per-car edge calibration. */
-    private fun karaokeColumn(): Int =
-        (KARAOKE_COLUMN_DEFAULT + karaokeEdge).coerceIn(24, 64)
+    /** Right-edge column of the Karaoke board: host hint plus the phone's edge nudge. */
+    private fun karaokeColumn(): Int {
+        val edge = getSharedPreferences("auto_lyrics_prefs", MODE_PRIVATE)
+            .getInt(KARAOKE_EDGE_PREF_KEY, 0)
+        return AaKaraokeRows.columnFromIconSize(carIconSizePx, edge, KARAOKE_COLUMN_DEFAULT)
+    }
 
     private fun buildSyncMenu(
         state: LyricsState,
@@ -365,7 +413,7 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
 
             val posMs = getAaPositionMs()
             val idx = if (state.status == LyricsStatus.FOUND) {
-                findLineIndex(state.lines, posMs).coerceAtLeast(0)
+                findLineIndex(state.lines, posMs)
             } else {
                 val durationMs = state.track?.durationMs ?: 0
                 if (durationMs > 0) {
@@ -375,13 +423,44 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
             }
 
             // Current line pinned first: the window reads forward from the line
-            // being sung (full window retained near the song end).
+            // being sung; at the song end it shows fewer rows, never back-fills.
+            if (idx < 0) {
+                val introTrans = "♪".takeIf { state.translatedLines?.isNotEmpty() == true }
+                items.add(
+                    buildTextItem(
+                        "sync_line_intro",
+                        "$CURRENT_LINE_PREFIX♪",
+                        pad = true,
+                        subtitle = introTrans
+                    )
+                )
+                var prevBlank = true
+                for (i in 0 until minOf(state.lines.size, SYNC_WINDOW_SIZE - 1)) {
+                    val line = state.lines[i]
+                    if (line.text.isBlank() && prevBlank) continue
+                    prevBlank = line.text.isBlank()
+                    val trans = state.translatedLines?.getOrNull(i)?.takeIf { it.isNotBlank() }
+                    items.add(
+                        buildTextItem(
+                            "sync_line_$i",
+                            "$IDLE_LINE_PREFIX${line.text.ifBlank { "♪" }}",
+                            pad = true,
+                            subtitle = trans
+                        )
+                    )
+                }
+                return
+            }
             val windowEnd = minOf(state.lines.size, idx + SYNC_WINDOW_SIZE)
-            val adjustedStart = maxOf(0, windowEnd - SYNC_WINDOW_SIZE)
+            val adjustedStart = idx
 
+            var prevBlank = false
             for (i in adjustedStart until windowEnd) {
                 val line = state.lines[i]
                 val isCurrent = i == idx
+                val blank = line.text.isBlank()
+                if (blank && prevBlank && !isCurrent) continue
+                prevBlank = blank
                 val text = line.text.ifBlank { "♪" }
                 val trans = state.translatedLines?.getOrNull(i)?.takeIf { it.isNotBlank() }
                 items.add(
@@ -403,15 +482,6 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
             )
         }
 
-        if (state.status == LyricsStatus.FOUND) {
-            val columnNote = "right column: ${karaokeColumn()}"
-            items.add(
-                buildTextItem(KARAOKE_EDGE_MINUS_ID, "◀  Karaoke edge", subtitle = columnNote)
-            )
-            items.add(
-                buildTextItem(KARAOKE_EDGE_PLUS_ID, "▶  Karaoke edge", subtitle = columnNote)
-            )
-        }
 
     }
 
@@ -477,6 +547,7 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
 
         val sign = if (aaOffsetMs >= 0) "+" else ""
         items.add(buildTextItem("more_offset", "AA Offset", subtitle = "${sign}${aaOffsetMs}ms"))
+
     }
 
     private fun addTrackHeader(
@@ -543,14 +614,44 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
         }
 
         val posMs = getAaPositionMs()
-        val aaCurrentIdx = findLineIndex(lines, posMs).coerceAtLeast(0)
+        val aaCurrentIdx = findLineIndex(lines, posMs)
         val windowSize = DEFAULT_WINDOW_SIZE
-        val adjustedStart = stableWindowStart(aaCurrentIdx, lines.size)
+
+        if (aaCurrentIdx < 0) {
+            // Instrumental intro: the sung row is the music symbol until the
+            // first timed line starts, with the coming lines previewed below.
+            val introTrans = "♪".takeIf { state.translatedLines?.isNotEmpty() == true }
+            items.add(
+                buildTextItem("line_intro", "$CURRENT_LINE_PREFIX♪", pad = true, subtitle = introTrans)
+            )
+            var prevBlank = true
+            for (i in 0 until minOf(lines.size, windowSize - 1)) {
+                val line = lines[i]
+                if (line.text.isBlank() && prevBlank) continue
+                prevBlank = line.text.isBlank()
+                val trans = state.translatedLines?.getOrNull(i)?.takeIf { it.isNotBlank() }
+                items.add(
+                    buildTextItem("line_$i", "$IDLE_LINE_PREFIX${line.text.ifBlank { "♪" }}", pad = true, subtitle = trans)
+                )
+            }
+            return
+        }
+
+        // The sung line is always the first lyric row; near the song end the
+        // window simply shows fewer rows instead of back-filling old lines.
+        val adjustedStart = aaCurrentIdx
         val windowEnd = minOf(lines.size, adjustedStart + windowSize)
 
+        var prevBlank = false
         for (i in adjustedStart until windowEnd) {
             val line = lines[i]
             val isCurrent = i == aaCurrentIdx
+            // Several blank lines can follow one another (interludes, outros);
+            // they mean the same thing as one, so consecutive music symbols
+            // collapse to a single row. The line being sung is never skipped.
+            val blank = line.text.isBlank()
+            if (blank && prevBlank && !isCurrent) continue
+            prevBlank = blank
             val prefix = linePrefix(isCurrent)
 
             val text = line.text.ifBlank { "♪" }
@@ -1047,15 +1148,6 @@ class LyricsBrowserService : MediaBrowserServiceCompat() {
                 else aaOffsetMs += SYNC_STEP_MS
                 getSharedPreferences("auto_lyrics_prefs", MODE_PRIVATE)
                     .edit().putLong("aa_offset_ms", aaOffsetMs).apply()
-                notifyBrowseSections()
-                return
-            }
-
-            if (mediaId == KARAOKE_EDGE_MINUS_ID || mediaId == KARAOKE_EDGE_PLUS_ID) {
-                val delta = if (mediaId == KARAOKE_EDGE_MINUS_ID) -KARAOKE_EDGE_STEP else KARAOKE_EDGE_STEP
-                karaokeEdge = (karaokeEdge + delta).coerceIn(-18, 22)
-                getSharedPreferences("auto_lyrics_prefs", MODE_PRIVATE)
-                    .edit().putInt("aa_karaoke_edge", karaokeEdge).apply()
                 notifyBrowseSections()
                 return
             }

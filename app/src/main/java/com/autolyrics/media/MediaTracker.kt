@@ -671,7 +671,7 @@ class MediaTracker private constructor(context: Context) {
             durationSec = result.matchedDurationSec,
             lines = result.lines,
             status = LyricsStatus.FOUND,
-            source = if (result.isRichSync) "Musixmatch · RichSync" + result.timingTag else "Musixmatch · Line",
+            source = if (result.isRichSync) "Musixmatch · RichSync" else "Musixmatch · Line",
             syncKind = syncKind,
             artistQueryCorroborated = result.artistQueryCorroborated
         )
